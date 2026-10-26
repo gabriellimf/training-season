@@ -155,6 +155,8 @@ GARMIN_EMAIL
 GARMIN_PASSWORD
 ANTHROPIC_API_KEY
 APP_PASSWORD
+BREVO_API_KEY
+BACKUP_EMAIL_FROM
 BACKUP_EMAIL_TO
 TZ=America/Sao_Paulo
 ```
@@ -172,9 +174,15 @@ no registration, no password reset. Rate limiting on the login.
 
 ## Backup
 
-A weekly cron emails the database file to the owner. Delivery mechanism is still being
-chosen: DigitalOcean restricts some outbound mail ports, and the relay must work
-without a custom domain.
+A weekly cron gzips the database and emails it to the owner.
+
+DigitalOcean blocks outbound ports 25, 465 and 587 on every droplet, with no documented
+self-service unblock, so plain SMTP cannot work from this host. The relay is **Brevo
+over its HTTPS REST API**: free at 300 emails a day, no custom domain, and a static API
+key instead of an OAuth token that can expire.
+
+The job checks the file size first. Gmail accepts 25 MB and silently converts anything
+larger into a Drive link rather than bouncing.
 
 ## Accepted risks
 
