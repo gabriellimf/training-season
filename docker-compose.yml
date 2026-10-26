@@ -1,0 +1,11 @@
+services:
+  app:
+    build: .
+    environment:
+      TZ: America/Sao_Paulo
+    volumes:
+      # SQLite file and Garmin token cache. Survives image rebuilds.
+      - data:/data
+
+volumes:
+  data:
