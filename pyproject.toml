@@ -6,7 +6,7 @@ requires-python = ">=3.12"
 dependencies = []
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
 [dependency-groups]
@@ -20,13 +20,57 @@ dev = [
 target-version = "py312"
 src = ["src", "tests"]
 
+[tool.ruff.lint]
+select = [
+    "ASYNC",
+    "B",
+    "BLE",
+    "C",
+    "D",
+    "DTZ",
+    "E",
+    "EXE",
+    "F",
+    "FA",
+    "FLY",
+    "FURB",
+    "G",
+    "I",
+    "INT",
+    "ISC",
+    "LOG",
+    "N",
+    "PERF",
+    "PGH",
+    "PIE",
+    "PLC",
+    "PLE",
+    "PLR",
+    "PLW",
+    "PT",
+    "PTH",
+    "PYI",
+    "RET",
+    "RUF",
+    "S",
+    "SIM",
+    "T",
+    "TC",
+    "TRY",
+    "UP",
+    "W",
+    "YTT",
+]
+ignore = ["D203", "D212"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*.py" = ["D100", "D103", "S101"]
+
 [tool.mypy]
 strict = true
 python_version = "3.12"
-exclude = [
-    "^\\.venv/",
-]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
+addopts = ["--strict-markers", "--strict-config"]
+filterwarnings = ["error"]

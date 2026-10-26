@@ -2,7 +2,7 @@
 # No BuildKit mounts. docker compose on this host has no buildx plugin.
 # Pattern from https://docs.astral.sh/uv/guides/integration/docker/ (uv 0.11).
 
-FROM ghcr.io/astral-sh/uv:python3.12-trixie-slim AS builder
+FROM ghcr.io/astral-sh/uv:0.11.29-python3.12-trixie-slim AS builder
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 ENV UV_NO_DEV=1
 ENV UV_PYTHON_DOWNLOADS=0
@@ -11,7 +11,8 @@ WORKDIR /app
 COPY pyproject.toml uv.lock /app/
 RUN uv sync --locked --no-install-project
 COPY . /app
-RUN uv sync --locked
+RUN uv build --wheel --build-constraints build-requirements.txt --require-hashes \
+    && uv pip install --python /app/.venv/bin/python --no-deps /app/dist/*.whl
 
 
 FROM python:3.12-slim-trixie
@@ -27,11 +28,10 @@ RUN apt-get update \
 RUN groupadd --system --gid 999 nonroot \
     && useradd --system --gid 999 --uid 999 --create-home nonroot
 
-COPY --from=builder --chown=nonroot:nonroot /app /app
+COPY --from=builder /app /app
 
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
-ENV TZ=America/Sao_Paulo
 
 RUN mkdir -p /data && chown nonroot:nonroot /data
 VOLUME ["/data"]
