@@ -1,0 +1,95 @@
+[project]
+name = "training-season"
+version = "0.1.0"
+description = "Self-hosted single-user running coach"
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["hatchling==1.32.4"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.0",
+    "pytest>=9.1.1",
+    "ruff>=0.17.2",
+]
+
+[tool.ruff]
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "ASYNC",
+    "B",
+    "BLE",
+    "C",
+    "D",
+    "DTZ",
+    "E",
+    "EXE",
+    "F",
+    "FA",
+    "FLY",
+    "FURB",
+    "G",
+    "I",
+    "INT",
+    "ISC",
+    "LOG",
+    "N",
+    "PERF",
+    "PGH",
+    "PIE",
+    "PLC",
+    "PLE",
+    "PLR",
+    "PLW",
+    "PT",
+    "PTH",
+    "PYI",
+    "RET",
+    "RUF",
+    "S",
+    "SIM",
+    "T",
+    "TC",
+    "TRY",
+    "UP",
+    "W",
+    "YTT",
+]
+ignore = [
+    # These conflict with the selected D211 and D213 rules.
+    "D203",
+    "D212",
+    # This application needs docstrings where they help, not on every function.
+    "D1",
+    # Imperative docstring summaries are not required.
+    "D401",
+    # Domain thresholds are meaningful numeric comparisons.
+    "PLR2004",
+    # FastAPI dependencies and domain branches make these complexity checks noisy.
+    "PLR0911",
+    "PLR0912",
+    "PLR0913",
+    "PLR0915",
+    "PLR0917",
+    "C901",
+    # Long exception messages preserve readable causes for the chat.
+    "TRY003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*.py" = ["S101"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers", "--strict-config"]
+filterwarnings = ["error"]
