@@ -11,6 +11,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock /app/
 RUN uv sync --locked --no-install-project
 COPY . /app
+# Build constraints are generated from build-requirements.in.
 RUN uv build --wheel --build-constraints build-requirements.txt --require-hashes \
     && uv pip install --python /app/.venv/bin/python --no-deps /app/dist/*.whl
 
