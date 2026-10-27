@@ -3,7 +3,14 @@ name = "training-season"
 version = "0.1.0"
 description = "Self-hosted single-user running coach"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    # Pinned. Read the CHANGELOG before upgrading.
+    # 0.3.20 is the first version whose MFA client_state survives a restart.
+    "garminconnect==0.3.20",
+]
+
+[project.scripts]
+training-season-garmin = "training_season.garmin_auth:main"
 
 [build-system]
 requires = ["hatchling==1.32.4"]

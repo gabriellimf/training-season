@@ -1,12 +1,28 @@
-"""Shared database fixtures."""
+"""Shared test fixtures."""
 
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
+from curl_cffi.curl import Curl
+from requests.adapters import HTTPAdapter
 
 from training_season.database import connect, migrate
+
+
+class NetworkBlockedError(BaseException):
+    """Raised when a test attempts an unmocked network request."""
+
+
+@pytest.fixture(autouse=True)
+def block_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    def blocked(*_args: object, **_kwargs: object) -> NoReturn:
+        raise NetworkBlockedError("network access is disabled in tests")
+
+    monkeypatch.setattr(HTTPAdapter, "send", blocked)
+    monkeypatch.setattr(Curl, "perform", blocked)
 
 
 @pytest.fixture

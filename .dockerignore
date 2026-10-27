@@ -15,6 +15,7 @@ data
 *.db-wal
 *.db-shm
 garmin_tokens.json
+garmin_mfa_state.json
 .garminconnect
 .env
 .env.*

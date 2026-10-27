@@ -4,6 +4,9 @@ services:
     environment:
       TZ: America/Sao_Paulo
       DATABASE_PATH: /data/training-season.db
+      GARMIN_TOKEN_DIR: /data/garmin
+      GARMIN_EMAIL: ${GARMIN_EMAIL:-}
+      GARMIN_PASSWORD: ${GARMIN_PASSWORD:-}
     volumes:
       # SQLite file and Garmin token cache. Survives image rebuilds.
       - data:/data
