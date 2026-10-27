@@ -10,6 +10,7 @@
 *.db-shm
 data/
 garmin_tokens.json
+garmin_mfa_state.json
 .garminconnect/
 
 # Python
