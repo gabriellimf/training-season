@@ -7,14 +7,11 @@ import logging
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from decimal import Decimal
-from typing import TYPE_CHECKING
 from unittest.mock import patch
 
+import anthropic
 import httpx2
 import pytest
-
-if TYPE_CHECKING:
-    import anthropic
 
 from conftest import NetworkBlockedError
 from training_season import claude
@@ -55,6 +52,7 @@ _ENVIRONMENT_NAMES = (
     CLAUDE_CHAT_EFFORT_ENV,
 )
 _SERVER_MESSAGE = "private-server-message-sentinel"
+_MALFORMED_BODY_SENTINEL = "private malformed response body sentinel"
 RequestHandler = Callable[[httpx2.Request], httpx2.Response]
 
 
@@ -124,6 +122,71 @@ def _json_handler(
         return httpx2.Response(status_code, headers=response_headers, json=payload)
 
     return handle
+
+
+def _raw_json_handler(content_type: str, body: bytes) -> RequestHandler:
+    def handle(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            headers={
+                "content-type": content_type,
+                "request-id": "req_malformed",
+            },
+            content=body,
+        )
+
+    return handle
+
+
+def _malformed_response_cases() -> list[tuple[str, bytes, bool]]:
+    missing_usage = _message_payload(
+        content=[{"type": "text", "text": _MALFORMED_BODY_SENTINEL}]
+    )
+    missing_usage.pop("usage")
+    invalid_text = _message_payload(
+        content=[
+            {
+                "type": "text",
+                "text": None,
+                "private": _MALFORMED_BODY_SENTINEL,
+            }
+        ]
+    )
+    string_token_count = _message_payload(
+        content=[{"type": "text", "text": _MALFORMED_BODY_SENTINEL}],
+        usage={"input_tokens": "not-an-integer", "output_tokens": 50},
+    )
+    boolean_token_count = _message_payload(
+        content=[{"type": "text", "text": _MALFORMED_BODY_SENTINEL}],
+        usage={"input_tokens": True, "output_tokens": 50},
+    )
+    non_object_content = _message_payload()
+    non_object_content["content"] = [_MALFORMED_BODY_SENTINEL]
+
+    return [
+        (
+            "text/html",
+            f"<html>{_MALFORMED_BODY_SENTINEL}</html>".encode(),
+            False,
+        ),
+        ("application/json", b"null", False),
+        (
+            "application/json",
+            f'{{"body":"{_MALFORMED_BODY_SENTINEL}"'.encode(),
+            False,
+        ),
+        (
+            "application/json",
+            json.dumps([_MALFORMED_BODY_SENTINEL]).encode(),
+            False,
+        ),
+        ("application/json", b"{}", True),
+        ("application/json", json.dumps(missing_usage).encode(), True),
+        ("application/json", json.dumps(invalid_text).encode(), True),
+        ("application/json", json.dumps(string_token_count).encode(), True),
+        ("application/json", json.dumps(boolean_token_count).encode(), True),
+        ("application/json", json.dumps(non_object_content).encode(), True),
+    ]
 
 
 def _model_echo_handler(requests: list[httpx2.Request]) -> RequestHandler:
@@ -240,7 +303,11 @@ def test_invalid_model_fails(value: str) -> None:
         _config(**{CLAUDE_PLAN_MODEL_ENV: value})
 
     assert CLAUDE_PLAN_MODEL_ENV in str(raised.value)
-    assert value not in str(raised.value)
+    if len(value) <= 64:
+        assert f"Got: {value!r}." in str(raised.value)
+    else:
+        assert f"Got a value of {len(value)} characters." in str(raised.value)
+        assert value not in str(raised.value)
 
 
 @pytest.mark.parametrize("value", ["MEDIUM", "extreme"])
@@ -249,6 +316,41 @@ def test_invalid_effort_fails_and_lists_allowed_values(value: str) -> None:
         _config(**{CLAUDE_CHAT_EFFORT_ENV: value})
 
     assert "low, medium, high, xhigh, max, none" in str(raised.value)
+    assert f"Got: {value!r}." in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "variable",
+    [CLAUDE_PLAN_MODEL_ENV, CLAUDE_CHAT_EFFORT_ENV],
+)
+def test_invalid_config_does_not_echo_api_key(
+    variable: str,
+) -> None:
+    value = f"invalid-{_FAKE_KEY}-config"
+
+    with pytest.raises(ClaudeConfigurationError) as raised:
+        _config(**{variable: value})
+
+    assert f"Got a value of {len(value)} characters." in str(raised.value)
+    assert value not in str(raised.value)
+    assert _FAKE_KEY not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        (CLAUDE_PLAN_MODEL_ENV, "x" * 129),
+        (CLAUDE_CHAT_EFFORT_ENV, "x" * 65),
+    ],
+)
+def test_invalid_long_config_value_is_not_echoed(
+    variable: str,
+    value: str,
+) -> None:
+    with pytest.raises(ClaudeConfigurationError) as raised:
+        _config(**{variable: value})
+
+    assert f"Got a value of {len(value)} characters." in str(raised.value)
     assert value not in str(raised.value)
 
 
@@ -290,8 +392,27 @@ def test_check_prints_models_and_hides_key(
     assert claude.main(["check"]) == 0
     output = capsys.readouterr()
 
-    assert output.out == ("model=claude-opus-5-5\nmodel=claude-sonnet-5-5\n")
+    assert output.out == (
+        "plan model=claude-opus-5-5 effort=medium\n"
+        "chat model=claude-sonnet-5-5 effort=medium\n"
+    )
     assert _FAKE_KEY not in output.out + output.err
+
+
+def test_check_prints_none_effort(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv(ANTHROPIC_API_KEY_ENV, _FAKE_KEY)
+    monkeypatch.setenv(CLAUDE_PLAN_EFFORT_ENV, "none")
+    monkeypatch.setenv(CLAUDE_CHAT_EFFORT_ENV, "none")
+
+    assert claude.main(["check"]) == 0
+
+    assert capsys.readouterr().out == (
+        "plan model=claude-opus-5-5 effort=none\n"
+        "chat model=claude-sonnet-5-5 effort=none\n"
+    )
 
 
 def test_check_makes_no_network_call(
@@ -480,6 +601,9 @@ def test_max_tokens_stop_raises_response_error_and_logs_usage(
         adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
 
     assert raised.value.stop_reason == "max_tokens"
+    assert str(raised.value) == (
+        "Claude stopped at the max_tokens limit (request_id req_test)."
+    )
     assert "partial response sentinel" not in str(raised.value)
     assert "input_tokens=100" in caplog.text
     assert "cost_usd=0.001400" in caplog.text
@@ -496,6 +620,9 @@ def test_context_window_stop_raises_response_error() -> None:
 
     assert raised.value.stop_reason == "model_context_window_exceeded"
     assert raised.value.request_id == "req_test"
+    assert str(raised.value) == (
+        "Claude exceeded the model context window (request_id req_test)."
+    )
 
 
 def test_refusal_raises_with_category_and_no_explanation() -> None:
@@ -515,8 +642,36 @@ def test_refusal_raises_with_category_and_no_explanation() -> None:
         adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
 
     assert raised.value.category == "cyber"
+    assert str(raised.value) == (
+        "Claude refused the request (category cyber, request_id req_test)."
+    )
     assert "private refusal explanation sentinel" not in str(raised.value)
     assert raised.value.request_id == "req_test"
+
+
+def test_refusal_omits_invalid_category_and_missing_request_id() -> None:
+    payload = _message_payload(
+        stop_reason="refusal",
+        stop_details={
+            "type": "refusal",
+            "category": "not a category",
+            "explanation": "private refusal explanation sentinel",
+        },
+    )
+
+    def handle(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, json=payload)
+
+    with (
+        _adapter(handle) as adapter,
+        pytest.raises(ClaudeRefusalError) as raised,
+    ):
+        adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+
+    assert raised.value.category is None
+    assert raised.value.request_id is None
+    assert str(raised.value) == "Claude refused the request."
+    assert "private refusal explanation sentinel" not in str(raised.value)
 
 
 def test_end_turn_without_text_raises_response_error() -> None:
@@ -530,6 +685,7 @@ def test_end_turn_without_text_raises_response_error() -> None:
 
     assert raised.value.stop_reason == "end_turn"
     assert raised.value.request_id == "req_test"
+    assert str(raised.value) == "Claude returned no text (request_id req_test)."
 
 
 def test_client_built_with_max_retries_2_and_otel_off() -> None:
@@ -540,6 +696,31 @@ def test_client_built_with_max_retries_2_and_otel_off() -> None:
         api_key=_FAKE_KEY,
         max_retries=2,
         open_telemetry=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("current_level", "expected_level"),
+    [
+        (logging.WARNING, logging.WARNING),
+        (logging.DEBUG, logging.INFO),
+        (logging.NOTSET, logging.INFO),
+    ],
+)
+def test_client_logger_levels_are_only_raised(
+    current_level: int,
+    expected_level: int,
+) -> None:
+    logger_names = ("anthropic", "httpx2", "httpcore2")
+    for logger_name in logger_names:
+        logging.getLogger(logger_name).setLevel(current_level)
+
+    with patch("training_season.claude.anthropic.Anthropic"):
+        new_anthropic_client(_config())
+
+    assert all(
+        logging.getLogger(logger_name).level == expected_level
+        for logger_name in logger_names
     )
 
 
@@ -694,6 +875,143 @@ def test_error_message_excludes_server_text() -> None:
 
 
 @pytest.mark.parametrize(
+    ("content_type", "body", "is_message"),
+    _malformed_response_cases(),
+)
+def test_malformed_success_response_is_safe_error(
+    content_type: str,
+    body: bytes,
+    is_message: bool,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    expected_request_id = "req_malformed" if is_message else None
+    expected_message = (
+        "Anthropic returned a malformed response (request_id req_malformed)."
+        if is_message
+        else "Anthropic returned a malformed response."
+    )
+
+    with (
+        caplog.at_level(logging.WARNING),
+        _adapter(_raw_json_handler(content_type, body)) as adapter,
+        pytest.raises(ClaudeResponseError) as raised,
+    ):
+        adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+
+    assert str(raised.value) == expected_message
+    assert raised.value.request_id == expected_request_id
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert body.decode() not in str(raised.value)
+    assert body.decode() not in caplog.text
+    assert _MALFORMED_BODY_SENTINEL not in str(raised.value)
+    assert _MALFORMED_BODY_SENTINEL not in caplog.text
+
+    failure_lines = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "training_season.claude"
+        and record.getMessage().startswith("Claude call failed:")
+    ]
+    assert len(failure_lines) == 1
+    assert (
+        f"Claude call failed: job=plan model=claude-opus-5-5 "
+        f"error=ClaudeResponseError status=None error_type=None "
+        f"request_id={expected_request_id} duration_ms="
+    ) in failure_lines[0]
+
+
+def test_malformed_message_omits_missing_request_id(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    payload = _message_payload(
+        content=[{"type": "text", "text": _MALFORMED_BODY_SENTINEL}]
+    )
+    payload.pop("usage")
+    body = json.dumps(payload).encode()
+
+    def handle(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=body,
+        )
+
+    with (
+        caplog.at_level(logging.WARNING),
+        _adapter(handle) as adapter,
+        pytest.raises(ClaudeResponseError) as raised,
+    ):
+        adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+
+    assert str(raised.value) == "Anthropic returned a malformed response."
+    assert raised.value.request_id is None
+    assert raised.value.__context__ is None
+    assert _MALFORMED_BODY_SENTINEL not in str(raised.value)
+    assert _MALFORMED_BODY_SENTINEL not in caplog.text
+    failure_lines = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "training_season.claude"
+        and record.getMessage().startswith("Claude call failed:")
+    ]
+    assert len(failure_lines) == 1
+    assert (
+        "Claude call failed: job=plan model=claude-opus-5-5 "
+        "error=ClaudeResponseError status=None error_type=None "
+        "request_id=None duration_ms="
+    ) in failure_lines[0]
+
+
+def test_sdk_response_validation_error_maps_safely(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sdk_response = httpx2.Response(
+        200,
+        headers={"request-id": "req_validation"},
+        request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages"),
+    )
+    sdk_error = anthropic.APIResponseValidationError(
+        response=sdk_response,
+        body={"message": _SERVER_MESSAGE},
+    )
+
+    with (
+        caplog.at_level(logging.WARNING),
+        _adapter(_json_handler(_message_payload())) as adapter,
+    ):
+        client = adapter._get_client()
+        with (
+            patch.object(client.messages, "create", side_effect=sdk_error),
+            pytest.raises(ClaudeResponseError) as raised,
+        ):
+            adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+
+    assert str(raised.value) == (
+        "Anthropic returned a response that does not match the SDK schema "
+        "(request_id req_validation)."
+    )
+    assert raised.value.status_code == 200
+    assert raised.value.request_id == "req_validation"
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert _SERVER_MESSAGE not in str(raised.value)
+    assert _SERVER_MESSAGE not in caplog.text
+    failure_lines = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "training_season.claude"
+        and record.getMessage().startswith("Claude call failed:")
+    ]
+    assert len(failure_lines) == 1
+    assert (
+        "Claude call failed: job=plan model=claude-opus-5-5 "
+        "error=ClaudeResponseError status=200 error_type=None "
+        "request_id=req_validation duration_ms="
+    ) in failure_lines[0]
+
+
+@pytest.mark.parametrize(
     ("model", "expected_cost"),
     [
         ("claude-opus-5-5", Decimal("0.001536")),
@@ -786,13 +1104,11 @@ def test_success_log_line_has_expected_fields(
         adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
 
     assert (
-        "Claude call: model=claude-opus-5-5 input_tokens=100 output_tokens=50 "
+        "Claude call: job=plan model=claude-opus-5-5 effort=medium "
+        "stop_reason=end_turn input_tokens=100 output_tokens=50 "
         "cache_read_tokens=0 cache_write_tokens=0 cost_usd=0.001400 duration_ms="
     ) in caplog.text
     assert "request_id=req_test" in caplog.text
-    assert "job=" not in caplog.text
-    assert "effort=" not in caplog.text
-    assert "stop_reason=" not in caplog.text
 
 
 def test_failure_log_line_has_class_status_request_id(
@@ -812,8 +1128,8 @@ def test_failure_log_line_has_class_status_request_id(
         adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
 
     assert (
-        "Claude call failed: model=claude-opus-5-5 error=ClaudeUnavailableError "
-        "status=529 "
+        "Claude call failed: job=plan model=claude-opus-5-5 "
+        "error=ClaudeUnavailableError status=529 "
         "error_type=overloaded_error request_id=req_test duration_ms="
     ) in caplog.text
     assert _SERVER_MESSAGE not in caplog.text

@@ -29,7 +29,8 @@ docker compose run --rm app training-season-claude check
 
 The check validates configuration. It does not create an SDK client or contact
 Anthropic. It exits with code `2` and a clear message when the key is missing.
-On success, it prints the plan model id followed by the chat model id.
+On success, it prints the plan model and effort, followed by the chat model and
+effort. It prints `none` when a job has no configured effort.
 
 Each consumer must call `claude_config_from_environment()` first. Do this before
 Garmin configuration, database access, or any other work. Pass the result to
@@ -73,12 +74,13 @@ The adapter logs `unknown` cost for other response models, refusals, non-standar
 service tiers, fast inference, non-global inference geography, or cache writes
 without a cache TTL breakdown. It does not store usage in SQLite.
 
-Each completed call logs the model, token counts, estimated cost, duration, and
-request id. A failed call logs the model, adapter error type, HTTP status, API error
-type, request id, and duration. It never logs job labels, effort, stop reasons,
-prompts, turns, responses, thinking, refusal explanations, server messages, or API
-keys.
+Each completed call logs the job, model, configured effort, stop reason, token counts,
+estimated cost, duration, and request id. A failed or malformed API response logs the
+job, configured model, adapter error type, HTTP status, API error type, request id, and
+duration. It never logs prompts, turns, responses, thinking, refusal explanations,
+server messages, or API keys.
 
-The adapter sets the `anthropic`, `httpx2`, and `httpcore2` loggers to `INFO` when it
-creates a client. Do not enable `DEBUG` for these loggers. This also overrides
-`ANTHROPIC_LOG=debug`, which can expose request bodies in SDK debug logs.
+The adapter raises the `anthropic`, `httpx2`, and `httpcore2` loggers to `INFO` when it
+creates a client if their levels are below `INFO`. It preserves `WARNING` and higher
+levels. This overrides `ANTHROPIC_LOG=debug`, which can expose request bodies in SDK
+debug logs.

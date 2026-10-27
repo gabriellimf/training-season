@@ -1,5 +1,6 @@
 """Shared test fixtures."""
 
+import logging
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -11,6 +12,15 @@ from curl_cffi.curl import Curl
 from requests.adapters import HTTPAdapter
 
 from training_season.database import connect, migrate
+
+
+@pytest.fixture(autouse=True)
+def restore_anthropic_logger_levels() -> Iterator[None]:
+    logger_names = ("anthropic", "httpx2", "httpcore2")
+    levels = {name: logging.getLogger(name).level for name in logger_names}
+    yield
+    for name, level in levels.items():
+        logging.getLogger(name).setLevel(level)
 
 
 class NetworkBlockedError(BaseException):

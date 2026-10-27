@@ -7,6 +7,7 @@ hold a Garmin session across an LLM call. Use the default HTTP client in product
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -42,6 +43,7 @@ _DEFAULT_PLAN_MODEL = "claude-opus-5-5"
 _DEFAULT_CHAT_MODEL = "claude-sonnet-5-5"
 _DEFAULT_EFFORT = "medium"
 _MODEL_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}\Z", re.ASCII)
+_REFUSAL_CATEGORY_PATTERN = re.compile(r"[a-z_]{1,64}\Z", re.ASCII)
 _LOGGER = logging.getLogger(__name__)
 
 _EFFORT_VALUES: dict[str, Effort | None] = {
@@ -163,13 +165,18 @@ class ClaudeResponseError(ClaudeError):
         message: str,
         *,
         stop_reason: str | None = None,
+        category: str | None = None,
         status_code: int | None = None,
         error_type: str | None = None,
         request_id: str | None = None,
     ) -> None:
         self.stop_reason = stop_reason
         super().__init__(
-            message,
+            _response_error_message(
+                message,
+                category=category,
+                request_id=request_id,
+            ),
             status_code=status_code,
             error_type=error_type,
             request_id=request_id,
@@ -181,10 +188,10 @@ class ClaudeRefusalError(ClaudeResponseError):
 
     def __init__(self, *, category: str | None, request_id: str | None) -> None:
         self.category = category
-        details = f" (category {category})" if category is not None else ""
         super().__init__(
-            f"Claude refused the request{details}.",
+            "Claude refused the request.",
             stop_reason="refusal",
+            category=category,
             request_id=request_id,
         )
 
@@ -230,6 +237,12 @@ def _environment_value(
     return value.strip()
 
 
+def _config_value_detail(value: str, api_key: str) -> str:
+    if len(value) <= 64 and api_key not in value:
+        return f"Got: {value!r}."
+    return f"Got a value of {len(value)} characters."
+
+
 def _model_id(
     environment: Mapping[str, str],
     variable: str,
@@ -239,8 +252,8 @@ def _model_id(
     model = _environment_value(environment, variable, default)
     if not _MODEL_ID_PATTERN.fullmatch(model) or api_key in model:
         raise ClaudeConfigurationError(
-            f"{variable} must be a model id with no whitespace, using ASCII "
-            "characters, and at most 128 characters."
+            f"{variable} must be a model id such as {default}: ASCII, no whitespace, "
+            f"at most 128 characters. {_config_value_detail(model, api_key)}"
         )
     return model
 
@@ -248,11 +261,13 @@ def _model_id(
 def _effort(
     environment: Mapping[str, str],
     variable: str,
+    api_key: str,
 ) -> Effort | None:
     value = _environment_value(environment, variable, _DEFAULT_EFFORT)
     if value not in _EFFORT_VALUES:
         raise ClaudeConfigurationError(
-            f"{variable} must be one of low, medium, high, xhigh, max, none."
+            f"{variable} must be one of low, medium, high, xhigh, max, none. "
+            f"{_config_value_detail(value, api_key)}"
         )
     return _EFFORT_VALUES[value]
 
@@ -272,11 +287,11 @@ def claude_config_from_environment(
     plan_model = _model_id(
         environment, CLAUDE_PLAN_MODEL_ENV, _DEFAULT_PLAN_MODEL, api_key
     )
-    plan_effort = _effort(environment, CLAUDE_PLAN_EFFORT_ENV)
+    plan_effort = _effort(environment, CLAUDE_PLAN_EFFORT_ENV, api_key)
     chat_model = _model_id(
         environment, CLAUDE_CHAT_MODEL_ENV, _DEFAULT_CHAT_MODEL, api_key
     )
-    chat_effort = _effort(environment, CLAUDE_CHAT_EFFORT_ENV)
+    chat_effort = _effort(environment, CLAUDE_CHAT_EFFORT_ENV, api_key)
 
     return ClaudeConfig(
         api_key=api_key,
@@ -302,7 +317,9 @@ def new_anthropic_client(
 ) -> anthropic.Anthropic:
     """Create the SDK client. Inject a mock HTTP client only in tests."""
     for logger_name in ("anthropic", "httpx2", "httpcore2"):
-        logging.getLogger(logger_name).setLevel(logging.INFO)
+        logger = logging.getLogger(logger_name)
+        if logger.level < logging.INFO:
+            logger.setLevel(logging.INFO)
 
     if http_client is None:
         return anthropic.Anthropic(
@@ -377,6 +394,70 @@ def _usage_for_response(
     )
 
 
+def _response_field(value: object, name: str) -> object:
+    if isinstance(value, Mapping):
+        return value.get(name)
+    return getattr(value, name, None)
+
+
+def _is_integer(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_optional_integer(value: object) -> bool:
+    return value is None or _is_integer(value)
+
+
+def _message_is_well_formed(response: anthropic.types.Message) -> bool:
+    if not isinstance(response.model, str) or not response.model.strip():
+        return False
+    if not isinstance(response.stop_reason, str) or not response.stop_reason.strip():
+        return False
+    if not isinstance(response.content, list):
+        return False
+
+    for block in response.content:
+        block_type = _response_field(block, "type")
+        if not isinstance(block_type, str):
+            return False
+        if block_type == "text" and not isinstance(_response_field(block, "text"), str):
+            return False
+
+    usage = response.usage
+    if not isinstance(usage, anthropic.types.Usage):
+        return False
+    if not _is_integer(usage.input_tokens) or not _is_integer(usage.output_tokens):
+        return False
+    if not _is_optional_integer(usage.cache_read_input_tokens):
+        return False
+    if not _is_optional_integer(usage.cache_creation_input_tokens):
+        return False
+    cache_creation = usage.cache_creation
+    if cache_creation is not None and (
+        not _is_integer(getattr(cache_creation, "ephemeral_5m_input_tokens", None))
+        or not _is_integer(getattr(cache_creation, "ephemeral_1h_input_tokens", None))
+    ):
+        return False
+    return not any(
+        value is not None and not isinstance(value, str)
+        for value in (usage.service_tier, usage.speed, usage.inference_geo)
+    )
+
+
+def _message_request_id(response: object) -> str | None:
+    if not isinstance(response, anthropic.types.Message):
+        return None
+    request_id = getattr(response, "_request_id", None)
+    return request_id if isinstance(request_id, str) else None
+
+
+def _malformed_response_error(response: object) -> ClaudeResponseError:
+    return ClaudeResponseError(
+        "Anthropic returned a malformed response.",
+        request_id=_message_request_id(response),
+    )
+
+
 def _error_details(
     status_code: int | None,
     error_type: str | None,
@@ -431,15 +512,34 @@ def _duration_ms(duration_seconds: float) -> int:
     return max(0, int(duration_seconds * 1000))
 
 
+def _response_error_message(
+    message: str,
+    *,
+    category: str | None,
+    request_id: str | None,
+) -> str:
+    details: list[str] = []
+    if category is not None and _REFUSAL_CATEGORY_PATTERN.fullmatch(category):
+        details.append(f"category {category}")
+    if isinstance(request_id, str) and request_id:
+        details.append(f"request_id {request_id}")
+    if not details:
+        return message
+    sentence = message.removesuffix(".")
+    return f"{sentence} ({', '.join(details)})."
+
+
 def _log_failure(
-    model: str,
+    job: ClaudeJob,
+    job_config: ClaudeJobConfig,
     error: ClaudeError,
     duration_seconds: float,
 ) -> None:
     _LOGGER.warning(
-        "Claude call failed: model=%s error=%s status=%s error_type=%s "
+        "Claude call failed: job=%s model=%s error=%s status=%s error_type=%s "
         "request_id=%s duration_ms=%d",
-        model,
+        job.value,
+        job_config.model,
         type(error).__name__,
         error.status_code,
         error.error_type,
@@ -449,17 +549,23 @@ def _log_failure(
 
 
 def _log_response(
+    job: ClaudeJob,
+    job_config: ClaudeJobConfig,
     model: str,
+    stop_reason: str,
     request_id: str | None,
     usage: ClaudeUsage,
     duration_seconds: float,
 ) -> None:
     cost = "unknown" if usage.cost_usd is None else f"{usage.cost_usd:.6f}"
     _LOGGER.info(
-        "Claude call: model=%s input_tokens=%d output_tokens=%d "
-        "cache_read_tokens=%d cache_write_tokens=%d cost_usd=%s duration_ms=%d "
-        "request_id=%s",
+        "Claude call: job=%s model=%s effort=%s stop_reason=%s "
+        "input_tokens=%d output_tokens=%d cache_read_tokens=%d "
+        "cache_write_tokens=%d cost_usd=%s duration_ms=%d request_id=%s",
+        job.value,
         model,
+        "none" if job_config.effort is None else job_config.effort,
+        stop_reason,
         usage.input_tokens,
         usage.output_tokens,
         usage.cache_read_input_tokens,
@@ -555,39 +661,59 @@ class ClaudeAdapter:
                 error_type=error_type,
             )
         except anthropic.APIResponseValidationError as sdk_error:
+            request_id = sdk_error.response.headers.get("request-id")
             failure = ClaudeResponseError(
                 "Anthropic returned a response that does not match the SDK schema.",
                 status_code=sdk_error.status_code,
-                request_id=sdk_error.response.headers.get("request-id"),
+                request_id=request_id if isinstance(request_id, str) else None,
             )
+        except json.JSONDecodeError:
+            failure = _malformed_response_error(None)
         else:
-            duration_seconds = time.monotonic() - started_at
-            return self._reply(job, response, duration_seconds)
+            if (
+                isinstance(response, anthropic.types.Message)
+                and _message_is_well_formed(response)
+                and isinstance(response.stop_reason, str)
+            ):
+                return self._reply(
+                    job,
+                    job_config,
+                    response,
+                    response.stop_reason,
+                    time.monotonic() - started_at,
+                )
+            failure = _malformed_response_error(response)
 
         duration_seconds = time.monotonic() - started_at
-        _log_failure(job_config.model, failure, duration_seconds)
+        _log_failure(job, job_config, failure, duration_seconds)
         raise failure from None
 
     def _reply(
         self,
         job: ClaudeJob,
+        job_config: ClaudeJobConfig,
         response: anthropic.types.Message,
+        stop_reason: str,
         duration_seconds: float,
     ) -> ClaudeReply:
-        request_id = response._request_id
-        stop_reason = response.stop_reason
+        request_id = _message_request_id(response)
         usage = _usage_for_response(response.model, response.usage, stop_reason)
         _log_response(
+            job,
+            job_config,
             response.model,
+            stop_reason,
             request_id,
             usage,
             duration_seconds,
         )
 
         if stop_reason == "refusal":
+            raw_category = _response_field(response.stop_details, "category")
             category = (
-                response.stop_details.category
-                if response.stop_details is not None
+                raw_category
+                if isinstance(raw_category, str)
+                and _REFUSAL_CATEGORY_PATTERN.fullmatch(raw_category)
                 else None
             )
             raise ClaudeRefusalError(category=category, request_id=request_id)
@@ -610,7 +736,13 @@ class ClaudeAdapter:
                 request_id=request_id,
             )
 
-        text = "".join(block.text for block in response.content if block.type == "text")
+        text_parts: list[str] = []
+        for block in response.content:
+            if _response_field(block, "type") == "text":
+                block_text = _response_field(block, "text")
+                if isinstance(block_text, str):
+                    text_parts.append(block_text)
+        text = "".join(text_parts)
         if stop_reason == "end_turn" and not text:
             raise ClaudeResponseError(
                 "Claude returned no text.",
@@ -655,7 +787,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stderr.write(f"{error}\n")
         return 2
 
-    sys.stdout.write(f"model={config.plan.model}\nmodel={config.chat.model}\n")
+    plan_effort = "none" if config.plan.effort is None else config.plan.effort
+    chat_effort = "none" if config.chat.effort is None else config.chat.effort
+    sys.stdout.write(
+        f"plan model={config.plan.model} effort={plan_effort}\n"
+        f"chat model={config.chat.model} effort={chat_effort}\n"
+    )
     return 0
 
 
