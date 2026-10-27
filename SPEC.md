@@ -159,6 +159,7 @@ BREVO_API_KEY
 BACKUP_EMAIL_FROM
 BACKUP_EMAIL_TO
 TZ=America/Sao_Paulo
+DATABASE_PATH
 ```
 
 The Garmin token is cached on disk and refreshes itself. If Garmin requires MFA, the
