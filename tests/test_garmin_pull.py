@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
@@ -464,11 +465,31 @@ def test_unknown_type_without_parent_is_skipped() -> None:
     assert _resolve_sport(activity_type, type_roots) is None
 
 
-def test_parent_cycle_is_skipped() -> None:
-    type_roots = {
-        1: ("custom_a", 2),
-        2: ("custom_b", 1),
-    }
+def test_parent_cycle_is_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(garmin_pull, "_MAX_ACTIVITY_TYPE_DEPTH", 1000)
+
+    class CountingTypeRoots(Mapping[int, tuple[str, int | None]]):
+        def __init__(self) -> None:
+            self.values_by_id = {
+                1: ("custom_a", 2),
+                2: ("custom_b", 1),
+            }
+            self.lookups = 0
+
+        def __getitem__(self, key: int) -> tuple[str, int | None]:
+            self.lookups += 1
+            return self.values_by_id[key]
+
+        def __iter__(self) -> Iterator[int]:
+            return iter(self.values_by_id)
+
+        def __len__(self) -> int:
+            return len(self.values_by_id)
+
+        def __contains__(self, key: object) -> bool:
+            return key in self.values_by_id
+
+    type_roots = CountingTypeRoots()
     activity_type: dict[str, Any] = {
         "typeId": 99,
         "typeKey": "custom",
@@ -476,6 +497,22 @@ def test_parent_cycle_is_skipped() -> None:
     }
 
     assert _resolve_sport(activity_type, type_roots) is None
+    assert type_roots.lookups == 2
+
+
+def test_parent_chain_at_hop_limit_resolves() -> None:
+    type_roots: dict[int, tuple[str, int | None]] = {
+        type_id: (f"custom_{type_id}", type_id + 1)
+        for type_id in range(1, _MAX_ACTIVITY_TYPE_DEPTH)
+    }
+    type_roots[_MAX_ACTIVITY_TYPE_DEPTH] = ("running", None)
+    activity_type: dict[str, Any] = {
+        "typeId": 0,
+        "typeKey": "custom",
+        "parentTypeId": 1,
+    }
+
+    assert _resolve_sport(activity_type, type_roots) == "running"
 
 
 def test_parent_chain_beyond_hop_limit_is_skipped() -> None:
@@ -1319,12 +1356,6 @@ def test_activity_commit_failure_rolls_back_current_unit_and_rerun_matches_clean
     partial_rows = _activity_rows(migrated_connection)
     assert [row[0] for row in partial_rows] == ["1"]
     assert partial_rows[0][11] is not None
-    assert (
-        migrated_connection.execute(
-            "SELECT splits_json FROM activity WHERE garmin_activity_id = '2'"
-        ).fetchone()
-        is None
-    )
     assert not migrated_connection.in_transaction
 
     migrated_connection.execute("DROP TRIGGER reject_activity")
