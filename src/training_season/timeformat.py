@@ -1,9 +1,31 @@
 """Helpers for storing UTC timestamps and training dates."""
 
+import os
+from collections.abc import Mapping
 from datetime import UTC, datetime
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 UTC_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+TRAINING_TIMEZONE_ENV = "TZ"
+
+
+class TrainingTimezoneError(ValueError):
+    """Raised when the training timezone is missing or invalid."""
+
+
+def training_zone_from_environment(
+    environ: Mapping[str, str] | None = None,
+) -> ZoneInfo:
+    """Read the training timezone from the process environment."""
+    environment = os.environ if environ is None else environ
+    timezone_name = environment.get(TRAINING_TIMEZONE_ENV)
+    if timezone_name is None or not timezone_name.strip():
+        raise TrainingTimezoneError("TZ must name an IANA timezone")
+
+    try:
+        return ZoneInfo(timezone_name.strip())
+    except (ValueError, ZoneInfoNotFoundError):
+        raise TrainingTimezoneError("TZ must name an IANA timezone") from None
 
 
 def _require_aware(moment: datetime) -> None:

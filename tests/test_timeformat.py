@@ -5,7 +5,29 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from training_season.timeformat import training_date, utc_timestamp
+from training_season.timeformat import (
+    TrainingTimezoneError,
+    training_date,
+    training_zone_from_environment,
+    utc_timestamp,
+)
+
+
+def test_training_zone_from_environment_reads_tz() -> None:
+    zone = training_zone_from_environment({"TZ": "UTC"})
+
+    assert zone.key == "UTC"
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [{}, {"TZ": ""}, {"TZ": "not/a-timezone"}],
+)
+def test_training_zone_from_environment_rejects_missing_or_unknown(
+    environment: dict[str, str],
+) -> None:
+    with pytest.raises(TrainingTimezoneError, match="TZ must name an IANA timezone"):
+        training_zone_from_environment(environment)
 
 
 def test_utc_timestamp_converts_aware_datetime() -> None:

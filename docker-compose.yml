@@ -5,6 +5,7 @@ services:
       TZ: America/Sao_Paulo
       DATABASE_PATH: /data/training-season.db
       GARMIN_TOKEN_DIR: /data/garmin
+      GARMIN_HISTORY_START: ${GARMIN_HISTORY_START:-}
       GARMIN_EMAIL: ${GARMIN_EMAIL:-}
       GARMIN_PASSWORD: ${GARMIN_PASSWORD:-}
     volumes:

@@ -11,6 +11,7 @@ dependencies = [
 
 [project.scripts]
 training-season-garmin = "training_season.garmin_auth:main"
+training-season-pull = "training_season.garmin_pull:main"
 
 [build-system]
 requires = ["hatchling==1.32.4"]
