@@ -2,18 +2,24 @@
 
 import logging
 import sqlite3
+import threading
+import time
 from contextlib import closing
 from pathlib import Path
 
 import pytest
 
+from training_season import database as database_module
 from training_season.database import (
     BUSY_TIMEOUT_SECONDS,
     DatabaseConfigurationError,
+    MigrationError,
+    MigrationResult,
     connect,
     database_path_from_environment,
     initialize_database,
     main,
+    migrate,
     transaction,
 )
 from training_season.timeformat import utc_now
@@ -23,6 +29,16 @@ def _insert_then_fail(connection: sqlite3.Connection) -> None:
     with transaction(connection):
         connection.execute("INSERT INTO example (value) VALUES (?)", ("not saved",))
         raise RuntimeError("failure")
+
+
+def _insert_deferred_invalid_message(connection: sqlite3.Connection) -> None:
+    with transaction(connection):
+        connection.execute("PRAGMA defer_foreign_keys = ON")
+        connection.execute(
+            "INSERT INTO message (role, content, weekly_plan_id, created_at) "
+            "VALUES ('assistant', 'missing plan', 999, ?)",
+            (utc_now(),),
+        )
 
 
 def test_database_path_reads_environment_variable(database_path: Path) -> None:
@@ -110,6 +126,20 @@ def test_transaction_rolls_back_on_error(database_path: Path) -> None:
         assert connection.execute("SELECT count(*) FROM example").fetchone() == (0,)
 
 
+def test_transaction_rolls_back_after_commit_error(
+    migrated_connection: sqlite3.Connection,
+) -> None:
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY constraint failed"):
+        _insert_deferred_invalid_message(migrated_connection)
+
+    assert not migrated_connection.in_transaction
+    with transaction(migrated_connection):
+        migrated_connection.execute(
+            "INSERT INTO coach_summary (summary, created_at) VALUES (?, ?)",
+            ("transaction recovered", utc_now()),
+        )
+
+
 def test_transaction_rejects_nested_use(database_path: Path) -> None:
     with (
         closing(connect(database_path)) as connection,
@@ -140,6 +170,103 @@ def test_initialize_database_creates_file_and_enables_wal(
         assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
 
 
+def test_wal_switch_retries_until_lock_released(
+    database_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lock_connection = connect(database_path)
+    lock_connection.execute("BEGIN IMMEDIATE")
+    retry_waiting = threading.Event()
+    retry_allowed = threading.Event()
+    results: list[MigrationResult] = []
+    errors: list[BaseException] = []
+    original_sleep = time.sleep
+
+    def wait_for_retry(seconds: float) -> None:
+        retry_waiting.set()
+        if not retry_allowed.wait(timeout=5):
+            original_sleep(seconds)
+
+    def initialize() -> None:
+        try:
+            results.append(initialize_database({"DATABASE_PATH": str(database_path)}))
+        except (
+            DatabaseConfigurationError,
+            MigrationError,
+            OSError,
+            RuntimeError,
+            sqlite3.Error,
+        ) as error:
+            errors.append(error)
+
+    monkeypatch.setattr(time, "sleep", wait_for_retry)
+    thread = threading.Thread(target=initialize)
+    thread.start()
+    try:
+        assert retry_waiting.wait(timeout=5)
+        assert thread.is_alive()
+    finally:
+        if lock_connection.in_transaction:
+            lock_connection.execute("ROLLBACK")
+        retry_allowed.set()
+        thread.join(timeout=20)
+        lock_connection.close()
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert len(results) == 1
+    with closing(connect(database_path)) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+
+
+def test_wal_switch_times_out_at_injected_deadline(
+    database_path: Path,
+) -> None:
+    with closing(connect(database_path)) as lock_connection:
+        lock_connection.execute("BEGIN IMMEDIATE")
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            initialize_database(
+                {"DATABASE_PATH": str(database_path)},
+                wal_retry_timeout=0.05,
+            )
+
+        lock_connection.execute("ROLLBACK")
+        assert lock_connection.execute("PRAGMA journal_mode").fetchone() == ("delete",)
+
+
+def test_already_wal_skips_switch(database_path: Path) -> None:
+    with closing(connect(database_path)) as connection:
+        assert connection.execute("PRAGMA journal_mode = WAL").fetchone() == ("wal",)
+        switch_attempts: list[str | None] = []
+
+        def deny_switch(
+            action: int,
+            argument_one: str | None,
+            argument_two: str | None,
+            _database_name: str | None,
+            _trigger_name: str | None,
+        ) -> int:
+            if (
+                action == sqlite3.SQLITE_PRAGMA
+                and argument_one == "journal_mode"
+                and argument_two is not None
+            ):
+                switch_attempts.append(argument_two)
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        connection.set_authorizer(deny_switch)
+        try:
+            database_module._ensure_wal_mode(
+                connection,
+                retry_timeout=0,
+            )
+        finally:
+            connection.set_authorizer(None)
+
+    assert switch_attempts == []
+
+
 def test_main_returns_2_when_path_unset(
     database_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -151,6 +278,61 @@ def test_main_returns_2_when_path_unset(
     assert main() == 2
     assert "DATABASE_PATH" in caplog.text
     assert not database_path.exists()
+
+
+def test_main_returns_1_for_migration_error(
+    database_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("DATABASE_PATH", str(database_path))
+    with closing(connect(database_path)) as connection:
+        connection.execute("PRAGMA user_version = 99")
+    caplog.set_level(logging.ERROR)
+
+    assert main() == 1
+    error_records = [
+        record for record in caplog.records if record.levelno == logging.ERROR
+    ]
+
+    assert len(error_records) == 1
+    assert error_records[0].getMessage() == (
+        "database initialization failed: database schema version 99 is newer than "
+        "this code, latest 1"
+    )
+    assert error_records[0].exc_info is None
+    assert "Traceback" not in caplog.text
+
+
+def test_main_logs_sqlite_constraint_without_row_value(
+    database_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def fail_with_constraint() -> None:
+        with closing(connect(database_path)) as connection:
+            migrate(connection)
+            connection.execute(
+                "INSERT INTO checkin (week_start, fatigue, has_pain, created_at) "
+                "VALUES ('2026-10-26', 11, 0, ?)",
+                (utc_now(),),
+            )
+
+    monkeypatch.setattr(database_module, "initialize_database", fail_with_constraint)
+    caplog.set_level(logging.ERROR)
+
+    assert main() == 1
+    error_records = [
+        record for record in caplog.records if record.levelno == logging.ERROR
+    ]
+
+    assert len(error_records) == 1
+    assert error_records[0].getMessage() == (
+        "database initialization failed: CHECK constraint failed: "
+        "fatigue BETWEEN 1 AND 10"
+    )
+    assert "11" not in error_records[0].getMessage()
+    assert error_records[0].exc_info is None
 
 
 def test_main_creates_database(

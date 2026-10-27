@@ -16,6 +16,7 @@ import os
 import re
 import sqlite3
 import sys
+import time
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from importlib.resources import files
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
 
 DATABASE_PATH_ENV = "DATABASE_PATH"
 BUSY_TIMEOUT_SECONDS = 10.0
+WAL_RETRY_INTERVAL_SECONDS = 0.05
 
 _MIGRATION_FILENAME = re.compile(r"(\d{4})_([a-z0-9_]+)\.sql")
 _LOGGER = logging.getLogger(__name__)
@@ -123,7 +125,15 @@ def transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     else:
         if not connection.in_transaction:
             raise RuntimeError("transaction ended before commit")
-        connection.execute("COMMIT")
+        try:
+            connection.execute("COMMIT")
+        except BaseException as commit_error:
+            if connection.in_transaction:
+                try:
+                    connection.execute("ROLLBACK")
+                except BaseException as rollback_error:
+                    raise commit_error from rollback_error
+            raise
 
 
 def load_migrations(
@@ -258,16 +268,48 @@ def migrate(
     )
 
 
+def _ensure_wal_mode(
+    connection: sqlite3.Connection,
+    *,
+    retry_timeout: float,
+) -> None:
+    row = connection.execute("PRAGMA journal_mode").fetchone()
+    if row is None:
+        raise DatabaseConfigurationError("SQLite did not return a journal mode")
+    if str(row[0]).casefold() == "wal":
+        return
+
+    deadline = time.monotonic() + retry_timeout
+    while True:
+        try:
+            row = connection.execute("PRAGMA journal_mode = WAL").fetchone()
+        except sqlite3.OperationalError as error:
+            message = str(error).casefold()
+            if "locked" not in message and "busy" not in message:
+                raise
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise
+            time.sleep(min(WAL_RETRY_INTERVAL_SECONDS, remaining))
+            if time.monotonic() >= deadline:
+                raise
+            continue
+
+        if row is None or str(row[0]).casefold() != "wal":
+            raise DatabaseConfigurationError("SQLite could not enable WAL mode")
+        return
+
+
 def initialize_database(
     environ: Mapping[str, str] | None = None,
+    *,
+    wal_retry_timeout: float = BUSY_TIMEOUT_SECONDS,
 ) -> MigrationResult:
     """Configure SQLite and apply migrations from the environment path."""
     path = database_path_from_environment(environ)
     with closing(connect(path)) as connection:
-        row = connection.execute("PRAGMA journal_mode = WAL").fetchone()
-        if row is None or str(row[0]).casefold() != "wal":
-            raise DatabaseConfigurationError("SQLite could not enable WAL mode")
-
+        _ensure_wal_mode(connection, retry_timeout=wal_retry_timeout)
         result = migrate(connection)
         applied: str | list[int] = list(result.applied) if result.applied else "none"
         _LOGGER.info(
@@ -287,6 +329,9 @@ def main() -> int:
     except DatabaseConfigurationError as error:
         _LOGGER.error("%s", error)  # noqa: TRY400
         return 2
+    except (MigrationError, sqlite3.Error) as error:
+        _LOGGER.error("database initialization failed: %s", error)  # noqa: TRY400
+        return 1
     return 0
 
 

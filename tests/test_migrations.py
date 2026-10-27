@@ -390,6 +390,7 @@ def test_migrate_waits_for_write_lock(database_path: Path) -> None:
         thread.start()
         assert thread_started.wait(timeout=10)
         time.sleep(0.1)
+        assert thread.is_alive()
         lock_connection.execute("ROLLBACK")
         thread.join(timeout=20)
 
