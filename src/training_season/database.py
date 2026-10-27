@@ -118,9 +118,12 @@ def transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     connection.execute("BEGIN IMMEDIATE")
     try:
         yield connection
-    except BaseException:
+    except BaseException as body_error:
         if connection.in_transaction:
-            connection.execute("ROLLBACK")
+            try:
+                connection.execute("ROLLBACK")
+            except BaseException as rollback_error:
+                raise body_error from rollback_error
         raise
     else:
         if not connection.in_transaction:

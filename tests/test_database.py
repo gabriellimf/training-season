@@ -126,6 +126,37 @@ def test_transaction_rolls_back_on_error(database_path: Path) -> None:
         assert connection.execute("SELECT count(*) FROM example").fetchone() == (0,)
 
 
+def test_transaction_preserves_body_error_when_rollback_fails(
+    database_path: Path,
+) -> None:
+    def deny_rollback(
+        action: int,
+        argument_one: str | None,
+        _argument_two: str | None,
+        _database_name: str | None,
+        _trigger_name: str | None,
+    ) -> int:
+        if action == sqlite3.SQLITE_TRANSACTION and argument_one == "ROLLBACK":
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    with closing(connect(database_path)) as connection:
+        connection.set_authorizer(deny_rollback)
+        try:
+            with (
+                pytest.raises(ValueError, match="original body error") as error,
+                transaction(connection),
+            ):
+                raise ValueError("original body error")
+        finally:
+            connection.set_authorizer(None)
+
+    assert type(error.value) is ValueError
+    assert str(error.value) == "original body error"
+    assert isinstance(error.value.__cause__, sqlite3.Error)
+    assert str(error.value.__cause__) == "not authorized"
+
+
 def test_transaction_rolls_back_after_commit_error(
     migrated_connection: sqlite3.Connection,
 ) -> None:
