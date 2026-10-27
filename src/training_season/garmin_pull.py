@@ -235,6 +235,19 @@ def _resolve_sport(
 
     parent_type_id = activity_type.get("parentTypeId")
     current_type_id = activity_type.get("typeId")
+    if (
+        (
+            isinstance(parent_type_id, bool)
+            or not isinstance(parent_type_id, int)
+            or parent_type_id not in type_roots
+        )
+        and isinstance(current_type_id, int)
+        and not isinstance(current_type_id, bool)
+    ):
+        current_type = type_roots.get(current_type_id)
+        if current_type is not None:
+            parent_type_id = current_type[1]
+
     visited: set[int] = set()
     if isinstance(current_type_id, int) and not isinstance(current_type_id, bool):
         visited.add(current_type_id)

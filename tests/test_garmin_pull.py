@@ -44,8 +44,11 @@ from training_season.garmin_auth import (
     start_login,
 )
 from training_season.garmin_pull import (
+    _MAX_ACTIVITY_TYPE_DEPTH,
     GarminPullResult,
+    _build_type_roots,
     _non_negative,
+    _resolve_sport,
     _vo2max_from,
     history_start_from_environment,
     pull_garmin,
@@ -54,6 +57,7 @@ from training_season.garmin_pull import (
 _ZONE = ZoneInfo("America/Sao_Paulo")
 _NOW = datetime(2026, 10, 27, 12, 0, tzinfo=UTC)
 _TODAY = "2026-10-27"
+_SEED_TIMESTAMP = "1970-01-01T00:00:00Z"
 pytest_plugins = ("test_garmin_auth",)
 
 
@@ -108,10 +112,13 @@ def _daily_summary(day: str, **fields: Any) -> dict[str, Any]:
 @dataclass
 class FakeGarminData:
     activities: list[Any] = field(default_factory=list)
+    activity_count_response: object | None = None
+    activities_by_date_response: object | None = None
     oldest_activity: Any = None
     activity_types: Any = field(default_factory=_activity_types)
     activity_laps: dict[str, Any] = field(default_factory=dict)
     daily_summaries: list[Any] = field(default_factory=list)
+    daily_summaries_response: object | None = None
     hrv_by_day: dict[str, Any] = field(default_factory=dict)
     max_metrics_by_day: dict[str, Any] = field(default_factory=dict)
     errors: dict[tuple[str, int], BaseException] = field(default_factory=dict)
@@ -145,6 +152,8 @@ class PullFakeGarmin(FakeGarmin):
 
     def count_activities(self) -> int:
         self._record("count_activities", ())
+        if self.data.activity_count_response is not None:
+            return cast("int", self.data.activity_count_response)
         return len(self.data.activities)
 
     def get_activities(
@@ -160,6 +169,7 @@ class PullFakeGarmin(FakeGarmin):
         )
         return [] if self.data.oldest_activity is None else [self.data.oldest_activity]
 
+    # This fake does not filter by window or offset; tests inspect recorded arguments.
     def get_activities_by_date(
         self,
         startdate: str,
@@ -171,6 +181,11 @@ class PullFakeGarmin(FakeGarmin):
             "get_activities_by_date",
             (startdate, enddate, activitytype, sortorder),
         )
+        if self.data.activities_by_date_response is not None:
+            return cast(
+                "list[dict[str, Any]]",
+                self.data.activities_by_date_response,
+            )
         return cast("list[dict[str, Any]]", self.data.activities)
 
     def get_activity_types(self) -> dict[str, Any]:
@@ -186,6 +201,8 @@ class PullFakeGarmin(FakeGarmin):
 
     def get_daily_summaries(self, start: str, end: str) -> dict[str, Any]:
         self._record("get_daily_summaries", (start, end))
+        if self.data.daily_summaries_response is not None:
+            return cast("dict[str, Any]", self.data.daily_summaries_response)
         summaries = [
             item
             for item in self.data.daily_summaries
@@ -258,7 +275,7 @@ def _seed_activity(
             activity_id,
             f"{activity_date}T12:00:00Z",
             activity_date,
-            "2026-01-01T00:00:00Z",
+            _SEED_TIMESTAMP,
         ),
     )
 
@@ -268,7 +285,7 @@ def _seed_wellness(
     wellness_date: str,
     *,
     resting_hr: float = 50.0,
-    created_at: str = "2026-01-01T00:00:00Z",
+    created_at: str = _SEED_TIMESTAMP,
 ) -> None:
     connection.execute(
         """
@@ -414,6 +431,66 @@ def test_child_types_resolve_to_sport_via_parent_chain(
         ("swimming",),
         ("swimming",),
     ]
+
+
+def test_child_type_without_parent_uses_type_map() -> None:
+    type_roots = _build_type_roots(_activity_types())
+    activity_type: dict[str, Any] = {
+        "typeId": 3,
+        "typeKey": "treadmill_running",
+    }
+
+    assert _resolve_sport(activity_type, type_roots) == "running"
+
+
+def test_child_type_with_invalid_parent_uses_type_map() -> None:
+    type_roots = _build_type_roots(_activity_types())
+    activity_type: dict[str, Any] = {
+        "typeId": 3,
+        "typeKey": "treadmill_running",
+        "parentTypeId": "invalid",
+    }
+
+    assert _resolve_sport(activity_type, type_roots) == "running"
+
+
+def test_unknown_type_without_parent_is_skipped() -> None:
+    type_roots = _build_type_roots(_activity_types())
+    activity_type: dict[str, Any] = {
+        "typeId": 999,
+        "typeKey": "unknown_activity",
+    }
+
+    assert _resolve_sport(activity_type, type_roots) is None
+
+
+def test_parent_cycle_is_skipped() -> None:
+    type_roots = {
+        1: ("custom_a", 2),
+        2: ("custom_b", 1),
+    }
+    activity_type: dict[str, Any] = {
+        "typeId": 99,
+        "typeKey": "custom",
+        "parentTypeId": 1,
+    }
+
+    assert _resolve_sport(activity_type, type_roots) is None
+
+
+def test_parent_chain_beyond_hop_limit_is_skipped() -> None:
+    type_roots: dict[int, tuple[str, int | None]] = {
+        type_id: (f"custom_{type_id}", type_id + 1)
+        for type_id in range(1, _MAX_ACTIVITY_TYPE_DEPTH + 1)
+    }
+    type_roots[_MAX_ACTIVITY_TYPE_DEPTH + 1] = ("running", None)
+    activity_type: dict[str, Any] = {
+        "typeId": 0,
+        "typeKey": "custom",
+        "parentTypeId": 1,
+    }
+
+    assert _resolve_sport(activity_type, type_roots) is None
 
 
 def test_other_sports_are_skipped_and_counted(
@@ -621,28 +698,105 @@ def test_laps_not_found_stores_null_splits(
     assert _activity_rows(migrated_connection)[0][11] is None
 
 
-def test_unexpected_activity_type_list_fails_before_writes(
+@pytest.mark.parametrize(
+    ("scenario", "expected_message"),
+    [
+        (
+            "activity_type_list",
+            "Garmin returned an unexpected activity type list",
+        ),
+        (
+            "activity_count_string",
+            "Garmin returned an unexpected activity count",
+        ),
+        (
+            "activity_count_negative",
+            "Garmin returned an unexpected activity count",
+        ),
+        (
+            "activity_count_boolean",
+            "Garmin returned an unexpected activity count",
+        ),
+        (
+            "oldest_empty_page",
+            "Garmin returned an unexpected oldest activity",
+        ),
+        (
+            "oldest_non_dict",
+            "Garmin returned an unexpected oldest activity",
+        ),
+        (
+            "oldest_unparseable",
+            "Garmin returned an unexpected oldest activity",
+        ),
+        (
+            "activities_not_list",
+            "Garmin returned an unexpected activity list",
+        ),
+        (
+            "activity_laps_not_serializable",
+            "Garmin returned unexpected activity laps",
+        ),
+        (
+            "daily_summaries_bad_shape",
+            "Garmin returned an unexpected daily summary list",
+        ),
+        (
+            "wellness_not_serializable",
+            "Garmin returned unexpected wellness data",
+        ),
+    ],
+)
+def test_fixed_message_garmin_errors_write_no_rows(
     migrated_connection: sqlite3.Connection,
     auth_config: GarminAuthConfig,
     fake_server: FakeGarminServer,
+    scenario: str,
+    expected_message: str,
 ) -> None:
-    data = FakeGarminData(
-        activities=[_activity(1)],
-        activity_types={"activityTypes": _activity_types()},
-    )
+    data = FakeGarminData()
+    history_start: str | None = _TODAY
+    if scenario == "activity_type_list":
+        data.activity_types = {"activityTypes": _activity_types()}
+    elif scenario.startswith("activity_count_"):
+        history_start = None
+        data.activities = [_activity(1)]
+        if scenario == "activity_count_string":
+            data.activity_count_response = "invalid"
+        elif scenario == "activity_count_negative":
+            data.activity_count_response = -1
+        else:
+            data.activity_count_response = True
+    elif scenario.startswith("oldest_"):
+        history_start = None
+        data.activities = [_activity(1)]
+        if scenario == "oldest_non_dict":
+            data.oldest_activity = "not-an-object"
+        elif scenario == "oldest_unparseable":
+            data.oldest_activity = {"startTimeGMT": "not-a-time"}
+    elif scenario == "activities_not_list":
+        data.activities = [_activity(1)]
+        data.activities_by_date_response = {"unexpected": "shape"}
+    elif scenario == "activity_laps_not_serializable":
+        data.activities = [
+            _activity(1, start_time=f"{_TODAY} 08:00:00"),
+        ]
+        data.activity_laps = {"1": object()}
+    elif scenario == "daily_summaries_bad_shape":
+        data.daily_summaries_response = {"data": "not-a-list"}
+    else:
+        data.hrv_by_day = {_TODAY: object()}
 
-    with pytest.raises(
-        GarminUnavailableError,
-        match="Garmin returned an unexpected activity type list",
-    ):
+    with pytest.raises(GarminUnavailableError) as raised:
         _run_pull(
             migrated_connection,
             auth_config,
             fake_server,
             data,
-            history_start="2026-10-24",
+            history_start=history_start,
         )
 
+    assert str(raised.value) == expected_message
     assert migrated_connection.execute("SELECT count(*) FROM activity").fetchone() == (
         0,
     )
@@ -889,7 +1043,7 @@ def test_wellness_overlap_updates_rows_and_keeps_created_at(
     auth_config: GarminAuthConfig,
     fake_server: FakeGarminServer,
 ) -> None:
-    old_created_at = "2026-01-01T00:00:00Z"
+    old_created_at = _SEED_TIMESTAMP
     _seed_wellness(
         migrated_connection,
         "2026-10-22",
@@ -1124,6 +1278,78 @@ def test_commit_failure_rolls_back_only_current_unit(
     assert not migrated_connection.in_transaction
 
 
+def test_activity_commit_failure_rolls_back_current_unit_and_rerun_matches_clean(
+    migrated_connection: sqlite3.Connection,
+    auth_config: GarminAuthConfig,
+    fake_server: FakeGarminServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_start = "2026-10-24"
+    monkeypatch.setattr(
+        garmin_pull,
+        "utc_now",
+        lambda: "2026-10-27T12:00:00Z",
+    )
+    migrated_connection.execute(
+        """
+        CREATE TRIGGER reject_activity
+        BEFORE INSERT ON activity
+        WHEN NEW.garmin_activity_id = '2'
+        BEGIN
+            SELECT RAISE(ABORT, 'test');
+        END
+        """
+    )
+    data = FakeGarminData(
+        activities=[
+            _activity(1, "2026-10-24 08:00:00"),
+            _activity(2, "2026-10-25 08:00:00"),
+        ]
+    )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        _run_pull(
+            migrated_connection,
+            auth_config,
+            fake_server,
+            data,
+            history_start=history_start,
+        )
+
+    partial_rows = _activity_rows(migrated_connection)
+    assert [row[0] for row in partial_rows] == ["1"]
+    assert partial_rows[0][11] is not None
+    assert (
+        migrated_connection.execute(
+            "SELECT splits_json FROM activity WHERE garmin_activity_id = '2'"
+        ).fetchone()
+        is None
+    )
+    assert not migrated_connection.in_transaction
+
+    migrated_connection.execute("DROP TRIGGER reject_activity")
+    _run_pull(
+        migrated_connection,
+        auth_config,
+        fake_server,
+        data,
+        history_start=history_start,
+    )
+    recovered_rows = _activity_rows(migrated_connection)
+
+    migrated_connection.execute("DELETE FROM activity")
+    _run_pull(
+        migrated_connection,
+        auth_config,
+        fake_server,
+        data,
+        history_start=history_start,
+    )
+    clean_rows = _activity_rows(migrated_connection)
+
+    assert recovered_rows == clean_rows
+
+
 def test_errors_and_logs_contain_no_health_data(
     migrated_connection: sqlite3.Connection,
     auth_config: GarminAuthConfig,
@@ -1193,6 +1419,63 @@ def test_pending_mfa_fails_before_any_data_call(
     assert all(not client.calls for client in clients)
 
 
+def test_no_write_transaction_is_open_during_garmin_calls(
+    migrated_connection: sqlite3.Connection,
+    auth_config: GarminAuthConfig,
+    fake_server: FakeGarminServer,
+) -> None:
+    method_names = (
+        "count_activities",
+        "get_activities",
+        "get_activities_by_date",
+        "get_activity_types",
+        "get_activity_laps",
+        "get_daily_summaries",
+        "get_hrv_data",
+        "get_max_metrics",
+    )
+    callback_counts = dict.fromkeys(method_names, 0)
+
+    def transaction_check_for(method_name: str) -> Callable[[], None]:
+        def check() -> None:
+            callback_counts[method_name] += 1
+            assert not migrated_connection.in_transaction
+
+        return check
+
+    activities = [
+        _activity(1, "2026-10-24 08:00:00"),
+        _activity(2, "2026-10-25 08:00:00", "swimming", type_id=2),
+    ]
+    data = FakeGarminData(
+        activities=activities,
+        oldest_activity=activities[0],
+        activity_laps={
+            "1": {"lapDTOs": [{"lapIndex": 1}]},
+            "2": {"lapDTOs": [{"lapIndex": 1}]},
+        },
+        daily_summaries=[_daily_summary("2026-10-24", restingHeartRate=50)],
+        hrv_by_day={"2026-10-24": {"hrvSummary": {"lastNightAvg": 45}}},
+        max_metrics_by_day={
+            "2026-10-24": [{"generic": {"vo2MaxPreciseValue": 48.0}}],
+        },
+        callbacks={name: transaction_check_for(name) for name in method_names},
+    )
+
+    result, clients = _run_pull(
+        migrated_connection,
+        auth_config,
+        fake_server,
+        data,
+    )
+
+    assert result.activities_added == 2
+    assert result.wellness_days_written == 1
+    for method_name in method_names:
+        assert callback_counts[method_name] > 0
+        assert callback_counts[method_name] == len(clients[0].calls[method_name])
+
+
 def test_lock_is_held_for_the_whole_pull(
     migrated_connection: sqlite3.Connection,
     auth_config: GarminAuthConfig,
@@ -1200,12 +1483,14 @@ def test_lock_is_held_for_the_whole_pull(
 ) -> None:
     data = FakeGarminData()
     factory, clients = _factory_for(fake_server, data)
+    lock_checks: list[str] = []
 
     def try_login() -> None:
+        lock_checks.append("get_max_metrics")
         with pytest.raises(GarminLockTimeoutError):
             start_login(auth_config, factory=factory, lock_timeout=0)
 
-    data.callbacks["get_activity_types"] = try_login
+    data.callbacks["get_max_metrics"] = try_login
     _write_fake_token(auth_config)
 
     pull_garmin(
@@ -1217,7 +1502,8 @@ def test_lock_is_held_for_the_whole_pull(
         history_start=_TODAY,
     )
 
-    assert clients[0].calls["get_activity_types"] == [()]
+    assert clients[0].calls["get_max_metrics"] == [(_TODAY,)]
+    assert lock_checks == ["get_max_metrics"]
 
 
 def test_login_reason_is_passed_through(
@@ -1373,6 +1659,46 @@ def test_history_start_is_ignored_when_tables_have_rows(
     assert result.wellness_start == "2026-10-07"
     assert clients[0].calls["get_activities_by_date"][0][0] == "2026-10-08"
     assert clients[0].calls["get_daily_summaries"][0][0] == "2026-10-07"
+
+
+@pytest.mark.parametrize(
+    (
+        "seed_activity",
+        "seed_wellness",
+        "expected_activity_start",
+        "expected_wellness_start",
+    ),
+    [
+        (True, False, "2026-10-08", "2026-10-25"),
+        (False, True, "2026-10-25", "2026-10-07"),
+    ],
+)
+def test_history_start_applies_per_table(
+    migrated_connection: sqlite3.Connection,
+    auth_config: GarminAuthConfig,
+    fake_server: FakeGarminServer,
+    seed_activity: bool,
+    seed_wellness: bool,
+    expected_activity_start: str,
+    expected_wellness_start: str,
+) -> None:
+    if seed_activity:
+        _seed_activity(migrated_connection, "stored", "2026-10-22")
+    if seed_wellness:
+        _seed_wellness(migrated_connection, "2026-10-21")
+
+    result, clients = _run_pull(
+        migrated_connection,
+        auth_config,
+        fake_server,
+        FakeGarminData(),
+        history_start="2026-10-25",
+    )
+
+    assert result.activity_start == expected_activity_start
+    assert result.wellness_start == expected_wellness_start
+    assert clients[0].calls["get_activities_by_date"][0][0] == (expected_activity_start)
+    assert clients[0].calls["get_daily_summaries"][0][0] == (expected_wellness_start)
 
 
 def test_history_start_in_the_future_fails_before_garmin_calls(
