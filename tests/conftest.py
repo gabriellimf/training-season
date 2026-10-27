@@ -1,15 +1,26 @@
 """Shared test fixtures."""
 
+import logging
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 from typing import NoReturn
 
+import httpx2
 import pytest
 from curl_cffi.curl import Curl
 from requests.adapters import HTTPAdapter
 
 from training_season.database import connect, migrate
+
+
+@pytest.fixture(autouse=True)
+def restore_anthropic_logger_levels() -> Iterator[None]:
+    logger_names = ("anthropic", "httpx2", "httpcore2")
+    levels = {name: logging.getLogger(name).level for name in logger_names}
+    yield
+    for name, level in levels.items():
+        logging.getLogger(name).setLevel(level)
 
 
 class NetworkBlockedError(BaseException):
@@ -23,6 +34,7 @@ def block_network(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(HTTPAdapter, "send", blocked)
     monkeypatch.setattr(Curl, "perform", blocked)
+    monkeypatch.setattr(httpx2.HTTPTransport, "handle_request", blocked)
 
 
 @pytest.fixture
