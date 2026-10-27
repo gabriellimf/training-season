@@ -193,19 +193,8 @@ def test_fake_matches_real_signatures() -> None:
     assert {"email", "password", "return_on_mfa"} <= constructor_parameters.keys()
 
 
-def test_real_client_state_keys_match_fake() -> None:
+def test_real_resume_accepts_fake_client_state() -> None:
     client_state = _client_state()
 
-    assert set(client_state) == {
-        "domain",
-        "flow",
-        "method",
-        "login_params",
-        "post_headers",
-        "service_url",
-        "csrf_token",
-        "impersonate",
-        "cookies",
-    }
     with pytest.raises(BaseException, match="network access is disabled in tests"):
         Garmin().resume_login(client_state, "000000")

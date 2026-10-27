@@ -17,6 +17,7 @@ from garminconnect.client import Client, token_file_path
 from garminconnect.exceptions import (
     GarminConnectAuthenticationError,
     GarminConnectConnectionError,
+    GarminConnectNotFoundError,
     GarminConnectTooManyRequestsError,
 )
 
@@ -156,7 +157,9 @@ class FakeGarmin(Garmin):
         self.client.di_refresh_token = _FAKE_REFRESH_TOKEN
         self.client.di_client_id = _FAKE_CLIENT_ID
         if self.server.profile_error_after_resume is not None:
-            raise self.server.profile_error_after_resume
+            raise GarminConnectAuthenticationError(
+                "Failed to retrieve social profile"
+            ) from self.server.profile_error_after_resume
         return None, None
 
 
@@ -492,15 +495,24 @@ def test_mfa_corrupt_state_file_is_deleted_and_reported(
     assert not state_path.exists()
 
 
+@pytest.mark.parametrize(
+    "profile_error",
+    [
+        pytest.param(
+            GarminConnectConnectionError("profile unavailable"),
+            id="connection-error",
+        ),
+        pytest.param(ValueError("invalid profile response"), id="value-error"),
+    ],
+)
 def test_mfa_accepted_but_profile_failed_keeps_token(
     auth_config: GarminAuthConfig,
     fake_server: FakeGarminServer,
     factory: GarminFactory,
+    profile_error: BaseException,
 ) -> None:
     _begin_mfa(auth_config, fake_server, factory)
-    fake_server.profile_error_after_resume = GarminConnectConnectionError(
-        "profile unavailable"
-    )
+    fake_server.profile_error_after_resume = profile_error
 
     with pytest.raises(GarminUnavailableError, match="token is saved"):
         submit_mfa_code(auth_config, _FAKE_CODE, factory=factory)
@@ -961,6 +973,36 @@ def test_session_translates_library_errors_from_body(
         garmin_session(auth_config, factory=factory),
     ):
         raise GarminConnectAuthenticationError("expired")
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_session_translates_rejected_status_from_body(
+    auth_config: GarminAuthConfig,
+    factory: GarminFactory,
+    status_code: int,
+) -> None:
+    error = GarminConnectConnectionError(f"API Error {status_code}")
+    error.response = type("Response", (), {"status_code": status_code})()
+
+    with (
+        pytest.raises(GarminTokenExpiredError),
+        garmin_session(auth_config, factory=factory),
+    ):
+        raise error
+
+
+def test_session_translates_not_found_from_body_to_unavailable(
+    auth_config: GarminAuthConfig,
+    factory: GarminFactory,
+) -> None:
+    error = GarminConnectNotFoundError("missing resource")
+    error.response = type("Response", (), {"status_code": 404})()
+
+    with (
+        pytest.raises(GarminUnavailableError),
+        garmin_session(auth_config, factory=factory),
+    ):
+        raise error
 
 
 def test_import_token_writes_cache_from_stdin(

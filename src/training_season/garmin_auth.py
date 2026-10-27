@@ -481,9 +481,9 @@ def _has_rejected_token_status(error: BaseException) -> bool:
 
 
 def _has_invalid_mfa_state_cause(error: BaseException) -> bool:
-    return any(
-        isinstance(cause, (AttributeError, KeyError, TypeError, ValueError))
-        for cause in _exception_chain(error)
+    return isinstance(
+        error.__cause__,
+        (AttributeError, KeyError, TypeError, ValueError),
     )
 
 
@@ -676,6 +676,10 @@ def garmin_session(
                 "Garmin rate-limited the authenticated request. Try again later."
             ) from error
         except GarminConnectConnectionError as error:
+            if _has_rejected_token_status(error):
+                raise GarminTokenExpiredError(
+                    "Garmin rejected the authenticated session; log in again"
+                ) from error
             raise GarminUnavailableError(
                 "Garmin is unreachable during the authenticated request"
             ) from error
@@ -719,8 +723,6 @@ def submit_mfa_code(
         try:
             garmin.resume_login(pending.client_state, normalized_code)
         except GarminConnectAuthenticationError as error:
-            if _has_invalid_mfa_state_cause(error):
-                raise _invalid_mfa_state(config) from error
             if garmin.client.is_authenticated:
                 _dump_and_verify_tokens(garmin.client, config, token_path)
                 _remove_mfa_state(config)
@@ -728,6 +730,8 @@ def submit_mfa_code(
                     "MFA was accepted, but loading the Garmin profile failed; "
                     "the token is saved. Retry later."
                 ) from error
+            if _has_invalid_mfa_state_cause(error):
+                raise _invalid_mfa_state(config) from error
             raise GarminMfaCodeRejectedError(
                 "Garmin rejected the MFA code. Try again or request a new code."
             ) from error

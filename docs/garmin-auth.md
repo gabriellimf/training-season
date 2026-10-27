@@ -46,6 +46,17 @@ Enter the code through stdin. It is not a command-line argument.
 uv run training-season-garmin mfa
 ```
 
+In Docker Compose, run each command in its own container:
+
+```sh
+docker compose run --rm app training-season-garmin status
+docker compose run --rm app training-season-garmin login
+docker compose run --rm app training-season-garmin mfa
+```
+
+The interactive `mfa` command needs a TTY, so do not pass `-T`. Pass `-T` when
+piping input to `mfa`.
+
 The MFA state has no automatic expiry. If Garmin rejects an old code, run
 `training-season-garmin login` to request a new one. This replaces the old pending
 state.
