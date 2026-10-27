@@ -40,4 +40,4 @@ VOLUME ["/data"]
 USER nonroot
 WORKDIR /app
 
-CMD ["python", "-c", "from training_season import __version__; print(__version__)"]
+CMD ["python", "-m", "training_season.database"]
