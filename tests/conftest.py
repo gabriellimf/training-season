@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import NoReturn
 
+import httpx2
 import pytest
 from curl_cffi.curl import Curl
 from requests.adapters import HTTPAdapter
@@ -23,6 +24,7 @@ def block_network(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(HTTPAdapter, "send", blocked)
     monkeypatch.setattr(Curl, "perform", blocked)
+    monkeypatch.setattr(httpx2.HTTPTransport, "handle_request", blocked)
 
 
 @pytest.fixture

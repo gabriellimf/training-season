@@ -8,6 +8,11 @@ services:
       GARMIN_HISTORY_START: ${GARMIN_HISTORY_START:-}
       GARMIN_EMAIL: ${GARMIN_EMAIL:-}
       GARMIN_PASSWORD: ${GARMIN_PASSWORD:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLAUDE_PLAN_MODEL: ${CLAUDE_PLAN_MODEL:-}
+      CLAUDE_PLAN_EFFORT: ${CLAUDE_PLAN_EFFORT:-}
+      CLAUDE_CHAT_MODEL: ${CLAUDE_CHAT_MODEL:-}
+      CLAUDE_CHAT_EFFORT: ${CLAUDE_CHAT_EFFORT:-}
     volumes:
       # SQLite file and Garmin token cache. Survives image rebuilds.
       - data:/data
