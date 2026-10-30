@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -144,13 +145,23 @@ def load_coach_instruction(
     configured_path = environment.get(COACH_INSTRUCTION_PATH_ENV, "").strip()
     path = coach_instruction_path_from_environment(environment)
 
-    if not path.exists():
-        raise CoachInstructionFileError(f"Coaching instruction file not found: {path}")
-    if path.is_dir():
+    try:
+        mode = path.stat().st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        raise CoachInstructionFileError(
+            f"Coaching instruction file not found: {path}"
+        ) from None
+    except OSError as error:
+        detail = error.strerror or type(error).__name__
+        raise CoachInstructionFileError(
+            f"Cannot read coaching instruction file {path}: {detail}"
+        ) from error
+
+    if stat.S_ISDIR(mode):
         raise CoachInstructionFileError(
             f"Coaching instruction path is a directory, not a file: {path}"
         )
-    if not path.is_file():
+    if not stat.S_ISREG(mode):
         raise CoachInstructionFileError(
             f"Coaching instruction path is not a regular file: {path}"
         )

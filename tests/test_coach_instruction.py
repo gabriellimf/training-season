@@ -183,6 +183,28 @@ def test_missing_file_fails(tmp_path: Path) -> None:
     assert str(path) in str(error.value)
 
 
+def test_long_path_fails(tmp_path: Path) -> None:
+    path = tmp_path / ("a" * 300)
+
+    with pytest.raises(CoachInstructionFileError) as error:
+        _load_path(path)
+
+    assert str(path) in str(error.value)
+
+
+def test_check_long_path_exits_2_without_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / ("a" * 300)
+    monkeypatch.setenv(COACH_INSTRUCTION_PATH_ENV, str(path))
+
+    assert coach_instruction.main(["check"]) == 2
+
+    stderr = capsys.readouterr().err
+    assert str(path) in stderr
+    assert "Traceback" not in stderr
+
+
 def test_directory_fails(tmp_path: Path) -> None:
     path = tmp_path / "instruction"
     path.mkdir()
@@ -215,6 +237,24 @@ def test_unreadable_file_fails(tmp_path: Path) -> None:
         _load_path(path)
 
     assert str(path) in str(error.value)
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0,
+    reason="root can read files with no permission bits",
+)
+def test_inaccessible_parent_directory_fails(tmp_path: Path) -> None:
+    parent = tmp_path / "restricted"
+    parent.mkdir()
+    path = _write_instruction(parent / "coach.md", "instruction")
+    parent.chmod(0o000)
+
+    try:
+        with pytest.raises(CoachInstructionFileError) as error:
+            _load_path(path)
+        assert str(path) in str(error.value)
+    finally:
+        parent.chmod(0o700)
 
 
 def test_file_over_size_cap_fails(tmp_path: Path) -> None:
@@ -383,6 +423,13 @@ def test_weeks_to_race(days: int, expected: int) -> None:
     race_date = _TODAY + timedelta(days=days)
 
     assert calculate_weeks_to_race(_TODAY, race_date) == expected
+
+
+def test_weeks_to_race_render_uses_training_date(tmp_path: Path) -> None:
+    instruction = _load_text(tmp_path, "$weeks_to_race")
+    race_date = _TODAY + timedelta(days=7)
+
+    assert _render(instruction, race_date=race_date) == "1"
 
 
 def test_weeks_to_race_missing_renders_marker(tmp_path: Path) -> None:
