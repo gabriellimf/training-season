@@ -13,6 +13,7 @@ services:
       CLAUDE_PLAN_EFFORT: ${CLAUDE_PLAN_EFFORT:-}
       CLAUDE_CHAT_MODEL: ${CLAUDE_CHAT_MODEL:-}
       CLAUDE_CHAT_EFFORT: ${CLAUDE_CHAT_EFFORT:-}
+      COACH_INSTRUCTION_PATH: ${COACH_INSTRUCTION_PATH:-}
     volumes:
       # SQLite file and Garmin token cache. Survives image rebuilds.
       - data:/data
