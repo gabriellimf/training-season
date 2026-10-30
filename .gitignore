@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+docker-compose.override.yml
 
 # Database and auth state — contains health data and Garmin tokens
 *.db

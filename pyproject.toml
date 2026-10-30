@@ -14,6 +14,7 @@ dependencies = [
 
 [project.scripts]
 training-season-claude = "training_season.claude:main"
+training-season-instruction = "training_season.coach_instruction:main"
 training-season-garmin = "training_season.garmin_auth:main"
 training-season-pull = "training_season.garmin_pull:main"
 
