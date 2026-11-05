@@ -9,23 +9,12 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 import httpx2
 import pytest
 
 from training_season import coach_instruction
-from training_season.claude import (
-    ANTHROPIC_API_KEY_ENV,
-    ChatTurn,
-    ClaudeAdapter,
-    ClaudeClientFactory,
-    ClaudeConfig,
-    ClaudeJob,
-    claude_config_from_environment,
-    new_anthropic_client,
-)
 from training_season.coach_instruction import (
     COACH_INSTRUCTION_PATH_ENV,
     DEFAULT_COACH_INSTRUCTION_PATH,
@@ -42,12 +31,16 @@ from training_season.coach_instruction import (
 from training_season.coach_instruction import (
     weeks_to_race as calculate_weeks_to_race,
 )
-
-if TYPE_CHECKING:
-    import anthropic
+from training_season.llm import (
+    ChatTurn,
+    LLMAdapter,
+    LLMJob,
+    llm_config_from_environment,
+    new_llm_adapter,
+)
 
 RequestHandler = Callable[[httpx2.Request], httpx2.Response]
-_FAKE_KEY = "sk-ant-test-not-a-real-key"
+_FAKE_KEY = "sk-or-test-not-a-real-key"
 _NOW = datetime(2026, 3, 2, 2, 30, tzinfo=UTC)
 _ZONE = ZoneInfo("America/Sao_Paulo")
 _TODAY = _NOW.astimezone(_ZONE).date()
@@ -88,40 +81,38 @@ def _render(
     )
 
 
-def _message_payload(model: str) -> dict[str, object]:
+def _completion_payload(model: str) -> dict[str, object]:
     return {
-        "id": "msg_test",
-        "type": "message",
-        "role": "assistant",
+        "id": "gen-test",
         "model": model,
-        "content": [{"type": "text", "text": "safe response"}],
-        "stop_reason": "end_turn",
-        "stop_sequence": None,
-        "usage": {"input_tokens": 100, "output_tokens": 50},
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "safe response"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 50, "cost": 0},
     }
 
 
-def _mock_factory(requests: list[httpx2.Request]) -> ClaudeClientFactory:
+def _handler(requests: list[httpx2.Request]) -> RequestHandler:
     def handle(request: httpx2.Request) -> httpx2.Response:
         requests.append(request)
         request_body = json.loads(request.content)
         return httpx2.Response(
-            200,
-            headers={"request-id": "req_test"},
-            json=_message_payload(str(request_body["model"])),
+            200, json=_completion_payload(str(request_body["model"]))
         )
 
-    def factory(config: ClaudeConfig) -> anthropic.Anthropic:
-        client = httpx2.Client(transport=httpx2.MockTransport(handle))
-        return new_anthropic_client(config, http_client=client)
-
-    return factory
+    return handle
 
 
 @contextmanager
-def _adapter(requests: list[httpx2.Request]) -> Iterator[ClaudeAdapter]:
-    config = claude_config_from_environment({ANTHROPIC_API_KEY_ENV: _FAKE_KEY})
-    adapter = ClaudeAdapter(config, factory=_mock_factory(requests))
+def _adapter(requests: list[httpx2.Request]) -> Iterator[LLMAdapter]:
+    config = llm_config_from_environment({"OPENAI_COMPATIBLE_API_KEY": _FAKE_KEY})
+    adapter = new_llm_adapter(
+        config, transport=httpx2.MockTransport(_handler(requests))
+    )
     try:
         yield adapter
     finally:
@@ -538,20 +529,20 @@ def test_replacing_file_changes_system_text(tmp_path: Path) -> None:
     requests: list[httpx2.Request] = []
     with _adapter(requests) as adapter:
         adapter.complete(
-            ClaudeJob.CHAT,
+            LLMJob.CHAT,
             system=system_a,
             turns=[ChatTurn("user", "safe user turn")],
         )
         adapter.complete(
-            ClaudeJob.CHAT,
+            LLMJob.CHAT,
             system=system_b,
             turns=[ChatTurn("user", "safe user turn")],
         )
 
-    bodies = [json.loads(request.content) for request in requests]
-    assert bodies[0]["system"] == system_a
-    assert bodies[1]["system"] == system_b
-    assert bodies[0]["system"] != bodies[1]["system"]
+    systems = [json.loads(request.content)["messages"][0] for request in requests]
+    assert systems[0] == {"role": "system", "content": system_a}
+    assert systems[1] == {"role": "system", "content": system_b}
+    assert system_a != system_b
 
 
 def test_german_instruction_reaches_system_unchanged(tmp_path: Path) -> None:
@@ -563,13 +554,14 @@ def test_german_instruction_reaches_system_unchanged(tmp_path: Path) -> None:
 
     with _adapter(requests) as adapter:
         adapter.complete(
-            ClaudeJob.CHAT,
+            LLMJob.CHAT,
             system=system_text,
             turns=[ChatTurn("user", "safe user turn")],
         )
 
-    body = json.loads(requests[0].content)
-    assert body["system"].encode("utf-8") == german_text.encode("utf-8")
+    system = json.loads(requests[0].content)["messages"][0]
+    assert system["role"] == "system"
+    assert system["content"].encode("utf-8") == german_text.encode("utf-8")
 
     _write_instruction(path, "Antworte auf Deutsch. Heute: ${today}")
     instruction_with_date = _load_path(path)
@@ -577,11 +569,11 @@ def test_german_instruction_reaches_system_unchanged(tmp_path: Path) -> None:
 
     with _adapter(requests) as adapter:
         adapter.complete(
-            ClaudeJob.CHAT,
+            LLMJob.CHAT,
             system=expected,
             turns=[ChatTurn("user", "safe user turn")],
         )
 
-    second_body = json.loads(requests[1].content)
-    assert second_body["system"] == expected
+    second_system = json.loads(requests[1].content)["messages"][0]
+    assert second_system == {"role": "system", "content": expected}
     assert expected == "Antworte auf Deutsch. Heute: 2026-03-01"

@@ -14,28 +14,29 @@ import httpx2
 import pytest
 
 from conftest import NetworkBlockedError
-from training_season import claude
 from training_season.claude import (
     ANTHROPIC_API_KEY_ENV,
     CLAUDE_CHAT_EFFORT_ENV,
     CLAUDE_CHAT_MODEL_ENV,
     CLAUDE_PLAN_EFFORT_ENV,
     CLAUDE_PLAN_MODEL_ENV,
-    ChatTurn,
     ClaudeAdapter,
-    ClaudeAuthenticationError,
     ClaudeClientFactory,
     ClaudeConfig,
-    ClaudeConfigurationError,
-    ClaudeError,
-    ClaudeJob,
-    ClaudeRateLimitedError,
-    ClaudeRefusalError,
-    ClaudeRequestRejectedError,
-    ClaudeResponseError,
-    ClaudeUnavailableError,
     claude_config_from_environment,
     new_anthropic_client,
+)
+from training_season.llm_base import (
+    ChatTurn,
+    LLMAuthenticationError,
+    LLMConfigurationError,
+    LLMError,
+    LLMJob,
+    LLMRateLimitedError,
+    LLMRefusalError,
+    LLMRequestRejectedError,
+    LLMResponseError,
+    LLMUnavailableError,
 )
 
 _FAKE_KEY = "sk-ant-test-not-a-real-key"
@@ -256,7 +257,7 @@ def test_config_reads_os_environ_when_environ_is_none(
 
 
 def test_missing_api_key_fails_with_clear_message() -> None:
-    with pytest.raises(ClaudeConfigurationError) as raised:
+    with pytest.raises(LLMConfigurationError) as raised:
         claude_config_from_environment({})
 
     assert str(raised.value) == (
@@ -267,7 +268,7 @@ def test_missing_api_key_fails_with_clear_message() -> None:
 
 @pytest.mark.parametrize("value", ["", "   "])
 def test_blank_api_key_fails(value: str) -> None:
-    with pytest.raises(ClaudeConfigurationError, match="ANTHROPIC_API_KEY"):
+    with pytest.raises(LLMConfigurationError, match="ANTHROPIC_API_KEY"):
         claude_config_from_environment({ANTHROPIC_API_KEY_ENV: value})
 
 
@@ -299,7 +300,7 @@ def test_empty_model_and_effort_take_defaults() -> None:
     ["claude test", "cláude-test", "x" * 129],
 )
 def test_invalid_model_fails(value: str) -> None:
-    with pytest.raises(ClaudeConfigurationError) as raised:
+    with pytest.raises(LLMConfigurationError) as raised:
         _config(**{CLAUDE_PLAN_MODEL_ENV: value})
 
     assert CLAUDE_PLAN_MODEL_ENV in str(raised.value)
@@ -312,7 +313,7 @@ def test_invalid_model_fails(value: str) -> None:
 
 @pytest.mark.parametrize("value", ["MEDIUM", "extreme"])
 def test_invalid_effort_fails_and_lists_allowed_values(value: str) -> None:
-    with pytest.raises(ClaudeConfigurationError) as raised:
+    with pytest.raises(LLMConfigurationError) as raised:
         _config(**{CLAUDE_CHAT_EFFORT_ENV: value})
 
     assert "low, medium, high, xhigh, max, none" in str(raised.value)
@@ -328,7 +329,7 @@ def test_invalid_config_does_not_echo_api_key(
 ) -> None:
     value = f"invalid-{_FAKE_KEY}-config"
 
-    with pytest.raises(ClaudeConfigurationError) as raised:
+    with pytest.raises(LLMConfigurationError) as raised:
         _config(**{variable: value})
 
     assert f"Got a value of {len(value)} characters." in str(raised.value)
@@ -347,7 +348,7 @@ def test_invalid_long_config_value_is_not_echoed(
     variable: str,
     value: str,
 ) -> None:
-    with pytest.raises(ClaudeConfigurationError) as raised:
+    with pytest.raises(LLMConfigurationError) as raised:
         _config(**{variable: value})
 
     assert f"Got a value of {len(value)} characters." in str(raised.value)
@@ -359,8 +360,8 @@ def test_model_swap_is_one_variable() -> None:
     config = _config(**{CLAUDE_PLAN_MODEL_ENV: "claude-test-model"})
 
     with _adapter(_model_echo_handler(requests), config) as adapter:
-        plan = adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
-        chat = adapter.complete(ClaudeJob.CHAT, system="system", turns=_turns())
+        plan = adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
+        chat = adapter.complete(LLMJob.CHAT, system="system", turns=_turns())
 
     plan_body = json.loads(requests[0].content)
     chat_body = json.loads(requests[1].content)
@@ -368,65 +369,6 @@ def test_model_swap_is_one_variable() -> None:
     assert plan_body["model"] == "claude-test-model"
     assert chat.model == "claude-sonnet-5-5"
     assert chat_body["model"] == "claude-sonnet-5-5"
-
-
-def test_check_exits_2_and_prints_message_when_key_missing(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    assert claude.main(["check"]) == 2
-    output = capsys.readouterr()
-
-    assert output.out == ""
-    assert output.err == (
-        "ANTHROPIC_API_KEY is not set. Set it in the environment or the Compose "
-        "env file before starting.\n"
-    )
-
-
-def test_check_prints_models_and_hides_key(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setenv(ANTHROPIC_API_KEY_ENV, _FAKE_KEY)
-
-    assert claude.main(["check"]) == 0
-    output = capsys.readouterr()
-
-    assert output.out == (
-        "plan model=claude-opus-5-5 effort=medium\n"
-        "chat model=claude-sonnet-5-5 effort=medium\n"
-    )
-    assert _FAKE_KEY not in output.out + output.err
-
-
-def test_check_prints_none_effort(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setenv(ANTHROPIC_API_KEY_ENV, _FAKE_KEY)
-    monkeypatch.setenv(CLAUDE_PLAN_EFFORT_ENV, "none")
-    monkeypatch.setenv(CLAUDE_CHAT_EFFORT_ENV, "none")
-
-    assert claude.main(["check"]) == 0
-
-    assert capsys.readouterr().out == (
-        "plan model=claude-opus-5-5 effort=none\n"
-        "chat model=claude-sonnet-5-5 effort=none\n"
-    )
-
-
-def test_check_makes_no_network_call(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    def fail(_config: ClaudeConfig) -> anthropic.Anthropic:
-        raise AssertionError("configuration check must not create an SDK client")
-
-    monkeypatch.setenv(ANTHROPIC_API_KEY_ENV, _FAKE_KEY)
-    monkeypatch.setattr(claude, "new_anthropic_client", fail)
-
-    assert claude.main(["check"]) == 0
-    capsys.readouterr()
 
 
 def test_plan_request_body() -> None:
@@ -437,7 +379,7 @@ def test_plan_request_body() -> None:
     )
 
     with _adapter(handler) as adapter:
-        adapter.complete(ClaudeJob.PLAN, system="safe system", turns=_turns())
+        adapter.complete(LLMJob.PLAN, system="safe system", turns=_turns())
 
     body = json.loads(requests[0].content)
     assert body["model"] == "claude-opus-5-5"
@@ -459,7 +401,7 @@ def test_chat_request_sends_history_in_order() -> None:
 
     with _adapter(handler) as adapter:
         adapter.complete(
-            ClaudeJob.CHAT,
+            LLMJob.CHAT,
             system="safe system",
             turns=[
                 ChatTurn("user", "first user turn"),
@@ -483,7 +425,7 @@ def test_effort_none_omits_output_config() -> None:
     with _adapter(
         _json_handler(_message_payload(), requests=requests), config
     ) as adapter:
-        adapter.complete(ClaudeJob.PLAN, system="safe system", turns=_turns())
+        adapter.complete(LLMJob.PLAN, system="safe system", turns=_turns())
 
     assert "output_config" not in json.loads(requests[0].content)
 
@@ -493,8 +435,8 @@ def test_per_call_timeout_is_sent() -> None:
     handler = _model_echo_handler(requests)
 
     with _adapter(handler) as adapter:
-        adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
-        adapter.complete(ClaudeJob.CHAT, system="system", turns=_turns())
+        adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
+        adapter.complete(LLMJob.CHAT, system="system", turns=_turns())
 
     assert requests[0].headers["x-stainless-timeout"] == "900.0"
     assert requests[1].headers["x-stainless-timeout"] == "600.0"
@@ -506,7 +448,7 @@ def test_plan_max_tokens_does_not_trigger_streaming_guard() -> None:
 
     with _adapter(handler) as adapter:
         reply = adapter.complete(
-            ClaudeJob.PLAN,
+            LLMJob.PLAN,
             system="safe system",
             turns=_turns(),
         )
@@ -532,9 +474,9 @@ def test_input_validation(
 
     with (
         _adapter(_json_handler(_message_payload(), requests=requests)) as adapter,
-        pytest.raises(ValueError, match=r"Claude|last Claude"),
+        pytest.raises(ValueError, match=r"LLM|last LLM"),
     ):
-        adapter.complete(ClaudeJob.PLAN, system=system, turns=turns)
+        adapter.complete(LLMJob.PLAN, system=system, turns=turns)
 
     assert requests == []
 
@@ -551,7 +493,7 @@ def test_text_joins_text_blocks_and_skips_thinking() -> None:
     ]
 
     with _adapter(_json_handler(_message_payload(content=content))) as adapter:
-        reply = adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+        reply = adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
 
     assert reply.text == "first second"
 
@@ -572,9 +514,9 @@ def test_reply_has_request_id_stop_reason_model_usage() -> None:
     )
 
     with _adapter(_json_handler(payload)) as adapter:
-        reply = adapter.complete(ClaudeJob.CHAT, system="system", turns=_turns())
+        reply = adapter.complete(LLMJob.CHAT, system="system", turns=_turns())
 
-    assert reply.job is ClaudeJob.CHAT
+    assert reply.job is LLMJob.CHAT
     assert reply.model == "claude-sonnet-5-5"
     assert reply.stop_reason == "end_turn"
     assert reply.request_id == "req_test"
@@ -596,9 +538,9 @@ def test_max_tokens_stop_raises_response_error_and_logs_usage(
     with (
         caplog.at_level(logging.INFO),
         _adapter(_json_handler(payload)) as adapter,
-        pytest.raises(ClaudeResponseError) as raised,
+        pytest.raises(LLMResponseError) as raised,
     ):
-        adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+        adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
 
     assert raised.value.stop_reason == "max_tokens"
     assert str(raised.value) == (
@@ -614,9 +556,9 @@ def test_context_window_stop_raises_response_error() -> None:
 
     with (
         _adapter(_json_handler(payload)) as adapter,
-        pytest.raises(ClaudeResponseError) as raised,
+        pytest.raises(LLMResponseError) as raised,
     ):
-        adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+        adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
 
     assert raised.value.stop_reason == "model_context_window_exceeded"
     assert raised.value.request_id == "req_test"
@@ -637,9 +579,9 @@ def test_refusal_raises_with_category_and_no_explanation() -> None:
 
     with (
         _adapter(_json_handler(payload)) as adapter,
-        pytest.raises(ClaudeRefusalError) as raised,
+        pytest.raises(LLMRefusalError) as raised,
     ):
-        adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+        adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
 
     assert raised.value.category == "cyber"
     assert str(raised.value) == (
@@ -664,9 +606,9 @@ def test_refusal_omits_invalid_category_and_missing_request_id() -> None:
 
     with (
         _adapter(handle) as adapter,
-        pytest.raises(ClaudeRefusalError) as raised,
+        pytest.raises(LLMRefusalError) as raised,
     ):
-        adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+        adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
 
     assert raised.value.category is None
     assert raised.value.request_id is None
@@ -679,9 +621,9 @@ def test_end_turn_without_text_raises_response_error() -> None:
 
     with (
         _adapter(_json_handler(payload)) as adapter,
-        pytest.raises(ClaudeResponseError) as raised,
+        pytest.raises(LLMResponseError) as raised,
     ):
-        adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+        adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
 
     assert raised.value.stop_reason == "end_turn"
     assert raised.value.request_id == "req_test"
@@ -746,7 +688,7 @@ def test_overloaded_then_success_is_retried() -> None:
         )
 
     with _adapter(handle) as adapter:
-        reply = adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+        reply = adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
 
     assert attempts == 3
     assert len(requests) == 3
@@ -762,8 +704,8 @@ def test_overloaded_three_times_raises_unavailable() -> None:
         requests=requests,
     )
 
-    with _adapter(handler) as adapter, pytest.raises(ClaudeUnavailableError) as raised:
-        adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+    with _adapter(handler) as adapter, pytest.raises(LLMUnavailableError) as raised:
+        adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
 
     assert len(requests) == 3
     assert raised.value.status_code == 529
@@ -779,8 +721,8 @@ def test_bad_request_is_not_retried() -> None:
         requests=requests,
     )
 
-    with _adapter(handler) as adapter, pytest.raises(ClaudeRequestRejectedError):
-        adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+    with _adapter(handler) as adapter, pytest.raises(LLMRequestRejectedError):
+        adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
 
     assert len(requests) == 1
 
@@ -793,8 +735,8 @@ def test_connection_error_retried_then_unavailable() -> None:
         attempts += 1
         raise httpx2.ConnectError("fake connection error")
 
-    with _adapter(handle) as adapter, pytest.raises(ClaudeUnavailableError) as raised:
-        adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+    with _adapter(handle) as adapter, pytest.raises(LLMUnavailableError) as raised:
+        adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
 
     assert attempts == 3
     assert raised.value.status_code is None
@@ -809,8 +751,8 @@ def test_timeout_retried_then_unavailable() -> None:
         attempts += 1
         raise httpx2.ReadTimeout("fake read timeout")
 
-    with _adapter(handle) as adapter, pytest.raises(ClaudeUnavailableError) as raised:
-        adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+    with _adapter(handle) as adapter, pytest.raises(LLMUnavailableError) as raised:
+        adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
 
     assert attempts == 3
     assert raised.value.status_code is None
@@ -820,24 +762,24 @@ def test_timeout_retried_then_unavailable() -> None:
 @pytest.mark.parametrize(
     ("status_code", "error_type", "expected_error", "expected_attempts"),
     [
-        (400, "invalid_request_error", ClaudeRequestRejectedError, 1),
-        (404, "not_found_error", ClaudeRequestRejectedError, 1),
-        (413, "request_too_large", ClaudeRequestRejectedError, 1),
-        (422, "unprocessable_entity", ClaudeRequestRejectedError, 1),
-        (401, "authentication_error", ClaudeAuthenticationError, 1),
-        (403, "permission_error", ClaudeAuthenticationError, 1),
-        (408, "timeout_error", ClaudeUnavailableError, 3),
-        (409, "conflict_error", ClaudeUnavailableError, 3),
-        (429, "rate_limit_error", ClaudeRateLimitedError, 3),
-        (500, "internal_server_error", ClaudeUnavailableError, 3),
-        (503, "service_unavailable", ClaudeUnavailableError, 3),
-        (529, "overloaded_error", ClaudeUnavailableError, 3),
+        (400, "invalid_request_error", LLMRequestRejectedError, 1),
+        (404, "not_found_error", LLMRequestRejectedError, 1),
+        (413, "request_too_large", LLMRequestRejectedError, 1),
+        (422, "unprocessable_entity", LLMRequestRejectedError, 1),
+        (401, "authentication_error", LLMAuthenticationError, 1),
+        (403, "permission_error", LLMAuthenticationError, 1),
+        (408, "timeout_error", LLMUnavailableError, 3),
+        (409, "conflict_error", LLMUnavailableError, 3),
+        (429, "rate_limit_error", LLMRateLimitedError, 3),
+        (500, "internal_server_error", LLMUnavailableError, 3),
+        (503, "service_unavailable", LLMUnavailableError, 3),
+        (529, "overloaded_error", LLMUnavailableError, 3),
     ],
 )
 def test_status_maps_to_adapter_error(
     status_code: int,
     error_type: str,
-    expected_error: type[ClaudeError],
+    expected_error: type[LLMError],
     expected_attempts: int,
 ) -> None:
     requests: list[httpx2.Request] = []
@@ -849,7 +791,7 @@ def test_status_maps_to_adapter_error(
     )
 
     with _adapter(handler) as adapter, pytest.raises(expected_error) as raised:
-        adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+        adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
 
     assert len(requests) == expected_attempts
     assert raised.value.status_code == status_code
@@ -865,9 +807,9 @@ def test_error_message_excludes_server_text() -> None:
 
     with (
         _adapter(handler) as adapter,
-        pytest.raises(ClaudeRequestRejectedError) as raised,
+        pytest.raises(LLMRequestRejectedError) as raised,
     ):
-        adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+        adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
 
     assert _SERVER_MESSAGE not in str(raised.value)
     assert raised.value.__cause__ is None
@@ -894,9 +836,9 @@ def test_malformed_success_response_is_safe_error(
     with (
         caplog.at_level(logging.WARNING),
         _adapter(_raw_json_handler(content_type, body)) as adapter,
-        pytest.raises(ClaudeResponseError) as raised,
+        pytest.raises(LLMResponseError) as raised,
     ):
-        adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+        adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
 
     assert str(raised.value) == expected_message
     assert raised.value.request_id == expected_request_id
@@ -916,7 +858,7 @@ def test_malformed_success_response_is_safe_error(
     assert len(failure_lines) == 1
     assert (
         f"Claude call failed: job=plan model=claude-opus-5-5 "
-        f"error=ClaudeResponseError status=None error_type=None "
+        f"error=LLMResponseError status=None error_type=None "
         f"request_id={expected_request_id} duration_ms="
     ) in failure_lines[0]
 
@@ -940,9 +882,9 @@ def test_malformed_message_omits_missing_request_id(
     with (
         caplog.at_level(logging.WARNING),
         _adapter(handle) as adapter,
-        pytest.raises(ClaudeResponseError) as raised,
+        pytest.raises(LLMResponseError) as raised,
     ):
-        adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+        adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
 
     assert str(raised.value) == "Anthropic returned a malformed response."
     assert raised.value.request_id is None
@@ -958,7 +900,7 @@ def test_malformed_message_omits_missing_request_id(
     assert len(failure_lines) == 1
     assert (
         "Claude call failed: job=plan model=claude-opus-5-5 "
-        "error=ClaudeResponseError status=None error_type=None "
+        "error=LLMResponseError status=None error_type=None "
         "request_id=None duration_ms="
     ) in failure_lines[0]
 
@@ -983,9 +925,9 @@ def test_sdk_response_validation_error_maps_safely(
         client = adapter._get_client()
         with (
             patch.object(client.messages, "create", side_effect=sdk_error),
-            pytest.raises(ClaudeResponseError) as raised,
+            pytest.raises(LLMResponseError) as raised,
         ):
-            adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+            adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
 
     assert str(raised.value) == (
         "Anthropic returned a response that does not match the SDK schema "
@@ -1006,7 +948,7 @@ def test_sdk_response_validation_error_maps_safely(
     assert len(failure_lines) == 1
     assert (
         "Claude call failed: job=plan model=claude-opus-5-5 "
-        "error=ClaudeResponseError status=200 error_type=None "
+        "error=LLMResponseError status=200 error_type=None "
         "request_id=req_validation duration_ms="
     ) in failure_lines[0]
 
@@ -1034,7 +976,7 @@ def test_cost_known_model(model: str, expected_cost: Decimal) -> None:
     )
 
     with _adapter(_json_handler(payload)) as adapter:
-        reply = adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+        reply = adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
 
     assert reply.usage.cost_usd == expected_cost
 
@@ -1045,7 +987,7 @@ def test_cost_unknown_model_logs_unknown_and_returns_reply(
     payload = _message_payload(model="claude-test-model")
 
     with caplog.at_level(logging.INFO), _adapter(_json_handler(payload)) as adapter:
-        reply = adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+        reply = adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
 
     assert reply.usage.cost_usd is None
     assert "cost_usd=unknown" in caplog.text
@@ -1081,11 +1023,11 @@ def test_cost_unknown_when_pricing_modifiers_present(
 
     with caplog.at_level(logging.INFO), _adapter(_json_handler(payload)) as adapter:
         if stop_reason == "refusal":
-            with pytest.raises(ClaudeRefusalError):
-                adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+            with pytest.raises(LLMRefusalError):
+                adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
         else:
             reply = adapter.complete(
-                ClaudeJob.PLAN,
+                LLMJob.PLAN,
                 system="system",
                 turns=_turns(),
             )
@@ -1101,7 +1043,7 @@ def test_success_log_line_has_expected_fields(
         caplog.at_level(logging.INFO),
         _adapter(_json_handler(_message_payload())) as adapter,
     ):
-        adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+        adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
 
     assert (
         "Claude call: job=plan model=claude-opus-5-5 effort=medium "
@@ -1123,13 +1065,13 @@ def test_failure_log_line_has_class_status_request_id(
     with (
         caplog.at_level(logging.WARNING),
         _adapter(handler) as adapter,
-        pytest.raises(ClaudeUnavailableError),
+        pytest.raises(LLMUnavailableError),
     ):
-        adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+        adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
 
     assert (
         "Claude call failed: job=plan model=claude-opus-5-5 "
-        "error=ClaudeUnavailableError status=529 "
+        "error=LLMUnavailableError status=529 "
         "error_type=overloaded_error request_id=req_test duration_ms="
     ) in caplog.text
     assert _SERVER_MESSAGE not in caplog.text
@@ -1168,10 +1110,10 @@ def test_logs_never_contain_prompt_response_or_key(
 
     caplog.set_level(logging.DEBUG)
     with _adapter(handle) as adapter:
-        adapter.complete(ClaudeJob.PLAN, system=system, turns=[ChatTurn("user", turn)])
-        with pytest.raises(ClaudeRequestRejectedError):
+        adapter.complete(LLMJob.PLAN, system=system, turns=[ChatTurn("user", turn)])
+        with pytest.raises(LLMRequestRejectedError):
             adapter.complete(
-                ClaudeJob.PLAN,
+                LLMJob.PLAN,
                 system=system,
                 turns=[ChatTurn("user", turn)],
             )
@@ -1184,6 +1126,6 @@ def test_default_client_is_network_blocked() -> None:
     adapter = ClaudeAdapter(_config())
     try:
         with pytest.raises(NetworkBlockedError):
-            adapter.complete(ClaudeJob.PLAN, system="system", turns=_turns())
+            adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
     finally:
         adapter.close()

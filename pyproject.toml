@@ -10,10 +10,11 @@ dependencies = [
     # Pinned. Read the CHANGELOG before upgrading.
     # 0.3.20 is the first version whose MFA client_state survives a restart.
     "garminconnect==0.3.20",
+    "httpx2>=2.16.0,<3",
 ]
 
 [project.scripts]
-training-season-claude = "training_season.claude:main"
+training-season-llm = "training_season.llm:main"
 training-season-instruction = "training_season.coach_instruction:main"
 training-season-garmin = "training_season.garmin_auth:main"
 training-season-pull = "training_season.garmin_pull:main"

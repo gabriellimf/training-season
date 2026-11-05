@@ -11,15 +11,36 @@ import json
 import logging
 import os
 import re
-import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
-from enum import StrEnum
 from typing import TYPE_CHECKING, Literal
 
 import anthropic
+
+from training_season.llm_base import (
+    CODE_PATTERN,
+    ChatTurn,
+    LLMAuthenticationError,
+    LLMConfigurationError,
+    LLMError,
+    LLMJob,
+    LLMRateLimitedError,
+    LLMRefusalError,
+    LLMReply,
+    LLMRequestRejectedError,
+    LLMResponseError,
+    LLMUnavailableError,
+    LLMUsage,
+    check_request,
+    config_value_detail,
+    duration_ms,
+    environment_value,
+    error_details,
+    model_id,
+    raise_http_logger_levels,
+)
 
 if TYPE_CHECKING:
     import httpx2
@@ -43,7 +64,6 @@ _DEFAULT_PLAN_MODEL = "claude-opus-5-5"
 _DEFAULT_CHAT_MODEL = "claude-sonnet-5-5"
 _DEFAULT_EFFORT = "medium"
 _MODEL_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}\Z", re.ASCII)
-_REFUSAL_CATEGORY_PATTERN = re.compile(r"[a-z_]{1,64}\Z", re.ASCII)
 _LOGGER = logging.getLogger(__name__)
 
 _EFFORT_VALUES: dict[str, Effort | None] = {
@@ -54,13 +74,6 @@ _EFFORT_VALUES: dict[str, Effort | None] = {
     "max": "max",
     "none": None,
 }
-
-
-class ClaudeJob(StrEnum):
-    """Model job selected by a consumer."""
-
-    PLAN = "plan"
-    CHAT = "chat"
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,119 +94,11 @@ class ClaudeConfig:
     plan: ClaudeJobConfig
     chat: ClaudeJobConfig
 
-    def for_job(self, job: ClaudeJob) -> ClaudeJobConfig:
+    def for_job(self, job: LLMJob) -> ClaudeJobConfig:
         """Return settings for a model job."""
-        if job is ClaudeJob.PLAN:
+        if job is LLMJob.PLAN:
             return self.plan
         return self.chat
-
-
-@dataclass(frozen=True, slots=True)
-class ChatTurn:
-    """One user or assistant message."""
-
-    role: Literal["user", "assistant"]
-    text: str = field(repr=False)
-
-
-@dataclass(frozen=True, slots=True)
-class ClaudeUsage:
-    """Token counts and estimated USD cost for one response."""
-
-    input_tokens: int
-    output_tokens: int
-    cache_read_input_tokens: int
-    cache_write_input_tokens: int
-    cost_usd: Decimal | None
-
-
-@dataclass(frozen=True, slots=True)
-class ClaudeReply:
-    """Text and safe metadata returned by Claude."""
-
-    text: str = field(repr=False)
-    job: ClaudeJob
-    model: str
-    stop_reason: str
-    request_id: str | None
-    usage: ClaudeUsage
-    duration_seconds: float
-
-
-class ClaudeError(Exception):
-    """Base class for Anthropic adapter errors."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        status_code: int | None = None,
-        error_type: str | None = None,
-        request_id: str | None = None,
-    ) -> None:
-        self.status_code = status_code
-        self.error_type = error_type
-        self.request_id = request_id
-        super().__init__(message)
-
-
-class ClaudeConfigurationError(ClaudeError):
-    """Raised when Anthropic environment configuration is invalid."""
-
-
-class ClaudeAuthenticationError(ClaudeError):
-    """Raised when Anthropic rejects authentication."""
-
-
-class ClaudeRequestRejectedError(ClaudeError):
-    """Raised when Anthropic rejects a request."""
-
-
-class ClaudeRateLimitedError(ClaudeError):
-    """Raised when Anthropic rate-limits a request after retries."""
-
-
-class ClaudeUnavailableError(ClaudeError):
-    """Raised when Anthropic is unavailable after retries."""
-
-
-class ClaudeResponseError(ClaudeError):
-    """Raised when Anthropic returns unusable model output."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        stop_reason: str | None = None,
-        category: str | None = None,
-        status_code: int | None = None,
-        error_type: str | None = None,
-        request_id: str | None = None,
-    ) -> None:
-        self.stop_reason = stop_reason
-        super().__init__(
-            _response_error_message(
-                message,
-                category=category,
-                request_id=request_id,
-            ),
-            status_code=status_code,
-            error_type=error_type,
-            request_id=request_id,
-        )
-
-
-class ClaudeRefusalError(ClaudeResponseError):
-    """Raised when the model refuses a request."""
-
-    def __init__(self, *, category: str | None, request_id: str | None) -> None:
-        self.category = category
-        super().__init__(
-            "Claude refused the request.",
-            stop_reason="refusal",
-            category=category,
-            request_id=request_id,
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,48 +131,16 @@ _PRICES_USD_PER_MILLION_TOKENS: Mapping[str, _ModelPrice] = {
 ClaudeClientFactory = Callable[[ClaudeConfig], anthropic.Anthropic]
 
 
-def _environment_value(
-    environment: Mapping[str, str],
-    variable: str,
-    default: str,
-) -> str:
-    value = environment.get(variable)
-    if value is None or not value.strip():
-        return default
-    return value.strip()
-
-
-def _config_value_detail(value: str, api_key: str) -> str:
-    if len(value) <= 64 and api_key not in value:
-        return f"Got: {value!r}."
-    return f"Got a value of {len(value)} characters."
-
-
-def _model_id(
-    environment: Mapping[str, str],
-    variable: str,
-    default: str,
-    api_key: str,
-) -> str:
-    model = _environment_value(environment, variable, default)
-    if not _MODEL_ID_PATTERN.fullmatch(model) or api_key in model:
-        raise ClaudeConfigurationError(
-            f"{variable} must be a model id such as {default}: ASCII, no whitespace, "
-            f"at most 128 characters. {_config_value_detail(model, api_key)}"
-        )
-    return model
-
-
 def _effort(
     environment: Mapping[str, str],
     variable: str,
     api_key: str,
 ) -> Effort | None:
-    value = _environment_value(environment, variable, _DEFAULT_EFFORT)
+    value = environment_value(environment, variable, _DEFAULT_EFFORT)
     if value not in _EFFORT_VALUES:
-        raise ClaudeConfigurationError(
+        raise LLMConfigurationError(
             f"{variable} must be one of low, medium, high, xhigh, max, none. "
-            f"{_config_value_detail(value, api_key)}"
+            f"{config_value_detail(value, api_key)}"
         )
     return _EFFORT_VALUES[value]
 
@@ -279,17 +152,25 @@ def claude_config_from_environment(
     environment = os.environ if environ is None else environ
     api_key = environment.get(ANTHROPIC_API_KEY_ENV, "").strip()
     if not api_key:
-        raise ClaudeConfigurationError(
+        raise LLMConfigurationError(
             "ANTHROPIC_API_KEY is not set. Set it in the environment or the Compose "
             "env file before starting."
         )
 
-    plan_model = _model_id(
-        environment, CLAUDE_PLAN_MODEL_ENV, _DEFAULT_PLAN_MODEL, api_key
+    plan_model = model_id(
+        environment,
+        CLAUDE_PLAN_MODEL_ENV,
+        _DEFAULT_PLAN_MODEL,
+        api_key,
+        pattern=_MODEL_ID_PATTERN,
     )
     plan_effort = _effort(environment, CLAUDE_PLAN_EFFORT_ENV, api_key)
-    chat_model = _model_id(
-        environment, CLAUDE_CHAT_MODEL_ENV, _DEFAULT_CHAT_MODEL, api_key
+    chat_model = model_id(
+        environment,
+        CLAUDE_CHAT_MODEL_ENV,
+        _DEFAULT_CHAT_MODEL,
+        api_key,
+        pattern=_MODEL_ID_PATTERN,
     )
     chat_effort = _effort(environment, CLAUDE_CHAT_EFFORT_ENV, api_key)
 
@@ -316,10 +197,7 @@ def new_anthropic_client(
     http_client: httpx2.Client | None = None,
 ) -> anthropic.Anthropic:
     """Create the SDK client. Inject a mock HTTP client only in tests."""
-    for logger_name in ("anthropic", "httpx2", "httpcore2"):
-        logger = logging.getLogger(logger_name)
-        if logger.level < logging.INFO:
-            logger.setLevel(logging.INFO)
+    raise_http_logger_levels("anthropic", "httpx2", "httpcore2")
 
     if http_client is None:
         return anthropic.Anthropic(
@@ -384,8 +262,8 @@ def _usage_for_response(
     model: str,
     usage: Usage,
     stop_reason: str | None,
-) -> ClaudeUsage:
-    return ClaudeUsage(
+) -> LLMUsage:
+    return LLMUsage(
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         cache_read_input_tokens=usage.cache_read_input_tokens or 0,
@@ -451,56 +329,41 @@ def _message_request_id(response: object) -> str | None:
     return request_id if isinstance(request_id, str) else None
 
 
-def _malformed_response_error(response: object) -> ClaudeResponseError:
-    return ClaudeResponseError(
+def _malformed_response_error(response: object) -> LLMResponseError:
+    return LLMResponseError(
         "Anthropic returned a malformed response.",
         request_id=_message_request_id(response),
     )
 
 
-def _error_details(
-    status_code: int | None,
-    error_type: str | None,
-    request_id: str | None,
-) -> str:
-    details: list[str] = []
-    if status_code is not None:
-        details.append(f"HTTP {status_code}")
-    if error_type is not None:
-        details.append(error_type)
-    if request_id is not None:
-        details.append(f"request_id {request_id}")
-    return f" ({', '.join(details)})" if details else ""
-
-
-def _status_error(error: anthropic.APIStatusError) -> ClaudeError:
+def _status_error(error: anthropic.APIStatusError) -> LLMError:
     status_code = error.status_code
     error_type = error.type
     request_id = error.request_id
-    details = _error_details(status_code, error_type, request_id)
+    details = error_details(status_code, error_type, request_id)
 
     if status_code in (401, 403):
-        return ClaudeAuthenticationError(
+        return LLMAuthenticationError(
             f"Anthropic rejected the API key{details}.",
             status_code=status_code,
             error_type=error_type,
             request_id=request_id,
         )
     if status_code == 429:
-        return ClaudeRateLimitedError(
+        return LLMRateLimitedError(
             f"Anthropic rate-limited the request after retries{details}.",
             status_code=status_code,
             error_type=error_type,
             request_id=request_id,
         )
     if status_code in (408, 409) or status_code >= 500:
-        return ClaudeUnavailableError(
+        return LLMUnavailableError(
             f"Anthropic is unavailable after retries{details}.",
             status_code=status_code,
             error_type=error_type,
             request_id=request_id,
         )
-    return ClaudeRequestRejectedError(
+    return LLMRequestRejectedError(
         f"Anthropic rejected the request{details}.",
         status_code=status_code,
         error_type=error_type,
@@ -508,31 +371,10 @@ def _status_error(error: anthropic.APIStatusError) -> ClaudeError:
     )
 
 
-def _duration_ms(duration_seconds: float) -> int:
-    return max(0, int(duration_seconds * 1000))
-
-
-def _response_error_message(
-    message: str,
-    *,
-    category: str | None,
-    request_id: str | None,
-) -> str:
-    details: list[str] = []
-    if category is not None and _REFUSAL_CATEGORY_PATTERN.fullmatch(category):
-        details.append(f"category {category}")
-    if isinstance(request_id, str) and request_id:
-        details.append(f"request_id {request_id}")
-    if not details:
-        return message
-    sentence = message.removesuffix(".")
-    return f"{sentence} ({', '.join(details)})."
-
-
 def _log_failure(
-    job: ClaudeJob,
+    job: LLMJob,
     job_config: ClaudeJobConfig,
-    error: ClaudeError,
+    error: LLMError,
     duration_seconds: float,
 ) -> None:
     _LOGGER.warning(
@@ -544,17 +386,17 @@ def _log_failure(
         error.status_code,
         error.error_type,
         error.request_id,
-        _duration_ms(duration_seconds),
+        duration_ms(duration_seconds),
     )
 
 
 def _log_response(
-    job: ClaudeJob,
+    job: LLMJob,
     job_config: ClaudeJobConfig,
     model: str,
     stop_reason: str,
     request_id: str | None,
-    usage: ClaudeUsage,
+    usage: LLMUsage,
     duration_seconds: float,
 ) -> None:
     cost = "unknown" if usage.cost_usd is None else f"{usage.cost_usd:.6f}"
@@ -571,7 +413,7 @@ def _log_response(
         usage.cache_read_input_tokens,
         usage.cache_write_input_tokens,
         cost,
-        _duration_ms(duration_seconds),
+        duration_ms(duration_seconds),
         request_id,
     )
 
@@ -596,20 +438,13 @@ class ClaudeAdapter:
 
     def complete(
         self,
-        job: ClaudeJob,
+        job: LLMJob,
         *,
         system: str,
         turns: Sequence[ChatTurn],
-    ) -> ClaudeReply:
+    ) -> LLMReply:
         """Complete one plan or chat request."""
-        if not system.strip():
-            raise ValueError("Claude system text is required")
-        if not turns:
-            raise ValueError("At least one Claude turn is required")
-        if any(not turn.text.strip() for turn in turns):
-            raise ValueError("Claude turn text is required")
-        if turns[-1].role != "user":
-            raise ValueError("The last Claude turn must be from the user")
+        check_request(system, turns)
 
         job_config = self._config.for_job(job)
         messages: list[MessageParam] = []
@@ -656,13 +491,13 @@ class ClaudeAdapter:
                 if isinstance(sdk_error, anthropic.APITimeoutError)
                 else "connection"
             )
-            failure = ClaudeUnavailableError(
+            failure = LLMUnavailableError(
                 f"Could not reach Anthropic after retries ({error_type}).",
                 error_type=error_type,
             )
         except anthropic.APIResponseValidationError as sdk_error:
             request_id = sdk_error.response.headers.get("request-id")
-            failure = ClaudeResponseError(
+            failure = LLMResponseError(
                 "Anthropic returned a response that does not match the SDK schema.",
                 status_code=sdk_error.status_code,
                 request_id=request_id if isinstance(request_id, str) else None,
@@ -690,12 +525,12 @@ class ClaudeAdapter:
 
     def _reply(
         self,
-        job: ClaudeJob,
+        job: LLMJob,
         job_config: ClaudeJobConfig,
         response: anthropic.types.Message,
         stop_reason: str,
         duration_seconds: float,
-    ) -> ClaudeReply:
+    ) -> LLMReply:
         request_id = _message_request_id(response)
         usage = _usage_for_response(response.model, response.usage, stop_reason)
         _log_response(
@@ -713,24 +548,28 @@ class ClaudeAdapter:
             category = (
                 raw_category
                 if isinstance(raw_category, str)
-                and _REFUSAL_CATEGORY_PATTERN.fullmatch(raw_category)
+                and CODE_PATTERN.fullmatch(raw_category)
                 else None
             )
-            raise ClaudeRefusalError(category=category, request_id=request_id)
+            raise LLMRefusalError(
+                "Claude refused the request.",
+                category=category,
+                request_id=request_id,
+            )
         if stop_reason == "max_tokens":
-            raise ClaudeResponseError(
+            raise LLMResponseError(
                 "Claude stopped at the max_tokens limit.",
                 stop_reason=stop_reason,
                 request_id=request_id,
             )
         if stop_reason == "model_context_window_exceeded":
-            raise ClaudeResponseError(
+            raise LLMResponseError(
                 "Claude exceeded the model context window.",
                 stop_reason=stop_reason,
                 request_id=request_id,
             )
         if stop_reason not in ("end_turn", "stop_sequence"):
-            raise ClaudeResponseError(
+            raise LLMResponseError(
                 "Claude returned an unsupported stop reason.",
                 stop_reason=stop_reason,
                 request_id=request_id,
@@ -744,13 +583,13 @@ class ClaudeAdapter:
                     text_parts.append(block_text)
         text = "".join(text_parts)
         if stop_reason == "end_turn" and not text:
-            raise ClaudeResponseError(
+            raise LLMResponseError(
                 "Claude returned no text.",
                 stop_reason=stop_reason,
                 request_id=request_id,
             )
 
-        return ClaudeReply(
+        return LLMReply(
             text=text,
             job=job,
             model=response.model,
@@ -765,36 +604,3 @@ class ClaudeAdapter:
         if self._client is not None:
             self._client.close()
             self._client = None
-
-
-def _print_usage() -> None:
-    sys.stderr.write("Usage: training-season-claude check\n")
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    """Check local Anthropic configuration without making an API call."""
-    arguments = list(sys.argv[1:] if argv is None else argv)
-    if arguments in (["--help"], ["-h"]):
-        _print_usage()
-        return 0
-    if arguments != ["check"]:
-        _print_usage()
-        return 2
-
-    try:
-        config = claude_config_from_environment()
-    except ClaudeConfigurationError as error:
-        sys.stderr.write(f"{error}\n")
-        return 2
-
-    plan_effort = "none" if config.plan.effort is None else config.plan.effort
-    chat_effort = "none" if config.chat.effort is None else config.chat.effort
-    sys.stdout.write(
-        f"plan model={config.plan.model} effort={plan_effort}\n"
-        f"chat model={config.chat.model} effort={chat_effort}\n"
-    )
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
