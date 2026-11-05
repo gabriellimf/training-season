@@ -96,12 +96,13 @@ Plan. Two coaches cannot write the same calendar.
 The coaching instruction is a **file in the repo**, not code. Anyone can replace it,
 in any language, with no code change.
 
-| Job | Model | Effort |
-| --- | --- | --- |
-| Sunday plan generation | Claude Opus | medium |
-| Chat turns | Claude Sonnet | medium |
+| Job | Default (`openai_compatible`, OpenRouter) | `LLM_PROVIDER=anthropic` | Effort (anthropic only) |
+| --- | --- | --- | --- |
+| Sunday plan generation | nvidia/nemotron-3-ultra-550b-a55b:free | Claude Opus | medium |
+| Chat turns | nvidia/nemotron-3-ultra-550b-a55b:free | Claude Sonnet | medium |
 
-Both behind one adapter.
+Both jobs go through one provider-neutral adapter. `LLM_PROVIDER` selects the
+provider.
 
 ### Macro plan
 
@@ -153,6 +154,11 @@ details anywhere in the code.
 ```
 GARMIN_EMAIL
 GARMIN_PASSWORD
+LLM_PROVIDER
+OPENAI_COMPATIBLE_API_KEY
+OPENAI_COMPATIBLE_BASE_URL
+OPENAI_COMPATIBLE_PLAN_MODEL
+OPENAI_COMPATIBLE_CHAT_MODEL
 ANTHROPIC_API_KEY
 CLAUDE_PLAN_MODEL
 CLAUDE_PLAN_EFFORT
