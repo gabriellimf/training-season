@@ -8,15 +8,25 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
     from decimal import Decimal
 
 CODE_PATTERN = re.compile(r"[a-z_]{1,64}\Z", re.ASCII)
+_FAILURE_LOG_FORMAT = (
+    "%s failed: job=%s model=%s error=%s status=%s error_type=%s "
+    "request_id=%s duration_ms=%d"
+)
+_RESPONSE_LOG_FORMAT = (
+    "%s: job=%s model=%s %s input_tokens=%d output_tokens=%d "
+    "cache_read_tokens=%d cache_write_tokens=%d cost_usd=%s duration_ms=%d "
+    "request_id=%s"
+)
 
 
 class LLMJob(StrEnum):
@@ -110,11 +120,7 @@ class LLMResponseError(LLMError):
     ) -> None:
         self.stop_reason = stop_reason
         super().__init__(
-            response_error_message(
-                message,
-                category=category,
-                request_id=request_id,
-            ),
+            response_error_message(message, category=category, request_id=request_id),
             status_code=status_code,
             error_type=error_type,
             request_id=request_id,
@@ -246,3 +252,125 @@ def raise_http_logger_levels(*names: str) -> None:
         logger = logging.getLogger(name)
         if logger.level < logging.INFO:
             logger.setLevel(logging.INFO)
+
+
+class ClosableLLMClient(Protocol):
+    def close(self) -> None: ...
+
+
+class LazyLLMClient[ConfigT, ClientT: ClosableLLMClient]:
+    """Create the provider client on first use and close it once."""
+
+    def __init__(self, config: ConfigT, factory: Callable[[ConfigT], ClientT]) -> None:
+        self._config = config
+        self._factory = factory
+        self._client: ClientT | None = None
+
+    def get_or_create(self) -> ClientT:
+        """Return the client. Create it on the first call."""
+        if self._client is None:
+            self._client = self._factory(self._config)
+        return self._client
+
+    def close(self) -> None:
+        """Close the client if one exists. A later call creates a new one."""
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+
+
+_STATUS_ERROR_PHRASES: Mapping[type[LLMError], str] = {
+    LLMAuthenticationError: "rejected the API key",
+    LLMRateLimitedError: "rate-limited the request after retries",
+    LLMUnavailableError: "is unavailable after retries",
+    LLMRequestRejectedError: "rejected the request",
+}
+
+
+def _usage_log_args(usage: LLMUsage) -> tuple[int, int, int, int, str]:
+    cost = "unknown" if usage.cost_usd is None else f"{usage.cost_usd:.6f}"
+    return (
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cache_read_input_tokens,
+        usage.cache_write_input_tokens,
+        cost,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class LLMProviderReporter:
+    """Provider wording, log prefix and status table behind shared errors and logs."""
+
+    subject_name: str
+    object_name: str
+    log_prefix: str
+    logger: logging.Logger
+    status_errors: Mapping[int, type[LLMError]]
+
+    def status_error(
+        self,
+        status_code: int,
+        error_type: str | None,
+        request_id: str | None,
+    ) -> LLMError:
+        error_class = self.status_errors.get(status_code)
+        if error_class is None:
+            error_class = (
+                LLMUnavailableError if status_code >= 500 else LLMRequestRejectedError
+            )
+        details = error_details(status_code, error_type, request_id)
+        return error_class(
+            f"{self.subject_name} {_STATUS_ERROR_PHRASES[error_class]}{details}.",
+            status_code=status_code,
+            error_type=error_type,
+            request_id=request_id,
+        )
+
+    def malformed_error(self, request_id: str | None) -> LLMResponseError:
+        return LLMResponseError(
+            f"{self.subject_name} returned a malformed response.",
+            request_id=request_id,
+        )
+
+    def unreachable_error(self, *, timed_out: bool) -> LLMUnavailableError:
+        error_type = "timeout" if timed_out else "connection"
+        return LLMUnavailableError(
+            f"Could not reach {self.object_name} after retries ({error_type}).",
+            error_type=error_type,
+        )
+
+    def log_failure(
+        self, job: LLMJob, model: str, error: LLMError, started_at: float
+    ) -> None:
+        self.logger.warning(
+            _FAILURE_LOG_FORMAT,
+            self.log_prefix,
+            job.value,
+            model,
+            type(error).__name__,
+            error.status_code,
+            error.error_type,
+            error.request_id,
+            duration_ms(time.monotonic() - started_at),
+        )
+
+    def log_response(
+        self,
+        job: LLMJob,
+        model: str,
+        stop_detail: str,
+        request_id: str | None,
+        usage: LLMUsage,
+        duration_seconds: float,
+    ) -> None:
+        self.logger.info(
+            _RESPONSE_LOG_FORMAT,
+            self.log_prefix,
+            job.value,
+            model,
+            stop_detail,
+            *_usage_log_args(usage),
+            duration_ms(duration_seconds),
+            request_id,
+        )

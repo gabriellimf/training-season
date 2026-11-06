@@ -9,6 +9,7 @@ import pytest
 
 from training_season.llm_base import (
     ChatTurn,
+    LazyLLMClient,
     LLMConfigurationError,
     LLMRefusalError,
     LLMResponseError,
@@ -118,3 +119,44 @@ def test_raise_http_logger_levels_only_raises() -> None:
 
     assert quiet.level == logging.INFO
     assert loud.level == logging.ERROR
+
+
+class FakeClosableClient:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+def test_lazy_client_creates_once_and_closes_once() -> None:
+    created: list[FakeClosableClient] = []
+
+    def factory(config: str) -> FakeClosableClient:
+        created.append(FakeClosableClient())
+        return created[-1]
+
+    lazy = LazyLLMClient("config", factory)
+
+    first = lazy.get_or_create()
+    assert lazy.get_or_create() is first
+    assert len(created) == 1
+
+    lazy.close()
+    lazy.close()
+    assert first.close_calls == 1
+
+    assert lazy.get_or_create() is not first
+    assert len(created) == 2
+
+
+def test_lazy_client_close_without_client_creates_nothing() -> None:
+    created: list[FakeClosableClient] = []
+
+    def factory(config: str) -> FakeClosableClient:
+        created.append(FakeClosableClient())
+        return created[-1]
+
+    LazyLLMClient("config", factory).close()
+
+    assert created == []

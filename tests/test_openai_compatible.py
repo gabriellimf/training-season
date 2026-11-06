@@ -788,6 +788,11 @@ def test_success_log_line_has_expected_fields(
         "cache_read_tokens=0 cache_write_tokens=0 cost_usd=0.000000 duration_ms="
     ) in caplog.text
     assert "request_id=gen-test" in caplog.text
+    assert {
+        record.name
+        for record in caplog.records
+        if record.getMessage().startswith("OpenAI-compatible call:")
+    } == {"training_season.openai_compatible"}
 
 
 def test_failure_log_line_has_class_status_and_error_type(
@@ -808,6 +813,11 @@ def test_failure_log_line_has_class_status_and_error_type(
         "request_id=None duration_ms="
     ) in caplog.text
     assert _SERVER_MESSAGE not in caplog.text
+    assert {
+        record.name
+        for record in caplog.records
+        if record.getMessage().startswith("OpenAI-compatible call failed:")
+    } == {"training_season.openai_compatible"}
 
 
 def test_logs_never_contain_prompt_response_or_key(
