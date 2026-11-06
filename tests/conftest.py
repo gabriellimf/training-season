@@ -50,3 +50,6 @@ def migrated_connection(database_path: Path) -> Iterator[sqlite3.Connection]:
         yield connection
     finally:
         connection.close()
+
+
+pytest_plugins = ("garmin_auth_fakes",)

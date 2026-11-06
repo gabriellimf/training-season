@@ -23,8 +23,8 @@ from garminconnect.exceptions import (
 from requests import Response
 from requests.adapters import HTTPAdapter
 
-from test_garmin_auth import FakeGarmin, _client_state
-from test_garmin_pull import PullFakeGarmin
+from garmin_auth_fakes import FakeGarmin, _client_state
+from garmin_pull_fakes import PullFakeGarmin
 from training_season.garmin_auth import (
     GarminAuthConfig,
     GarminMfaStateInvalidError,
