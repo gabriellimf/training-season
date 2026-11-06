@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
+from training_season.cli_entry import run_cli
 from training_season.database import (
     DatabaseConfigurationError,
     MigrationError,
@@ -166,41 +167,32 @@ def pull_garmin(
         return _pull_phases(run, session.login_reason)
 
 
-def _print_usage() -> None:
-    sys.stderr.write("Usage: training-season-pull [--help]\n")
+def _pull_and_print_counts() -> None:
+    initialize_database()
+    auth_config = garmin_auth_config_from_environment()
+    zone = training_zone_from_environment()
+    history_start = history_start_from_environment()
+    path = database_path_from_environment()
+    with closing(connect(path)) as connection:
+        result = pull_garmin(
+            connection,
+            auth_config,
+            zone,
+            history_start=history_start,
+        )
+    sys.stdout.write(
+        f"activities {result.activity_start}..{result.activity_end}: "
+        f"added {result.activities_added}, skipped {result.activities_skipped}, "
+        f"invalid {result.activities_invalid}; wellness "
+        f"{result.wellness_start}..{result.wellness_end}: "
+        f"{result.wellness_days_written} days\n"
+    )
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Run the manual Garmin pull command."""
-    arguments = list(sys.argv[1:] if argv is None else argv)
-    if arguments in (["--help"], ["-h"]):
-        _print_usage()
-        return 0
-    if arguments:
-        _print_usage()
-        return 2
-
+def _pull_cli(_arguments: tuple[str, ...]) -> int:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     try:
-        initialize_database()
-        auth_config = garmin_auth_config_from_environment()
-        zone = training_zone_from_environment()
-        history_start = history_start_from_environment()
-        path = database_path_from_environment()
-        with closing(connect(path)) as connection:
-            result = pull_garmin(
-                connection,
-                auth_config,
-                zone,
-                history_start=history_start,
-            )
-        sys.stdout.write(
-            f"activities {result.activity_start}..{result.activity_end}: "
-            f"added {result.activities_added}, skipped {result.activities_skipped}, "
-            f"invalid {result.activities_invalid}; wellness "
-            f"{result.wellness_start}..{result.wellness_end}: "
-            f"{result.wellness_days_written} days\n"
-        )
+        _pull_and_print_counts()
     except GarminMfaRequiredError as error:
         sys.stderr.write(f"{error}\n")
         return 3
@@ -215,6 +207,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stderr.write(f"{error}\n")
         return 1
     return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the manual Garmin pull command."""
+    return run_cli(argv, "training-season-pull [--help]", {()}, _pull_cli)
 
 
 if __name__ == "__main__":

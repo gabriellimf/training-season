@@ -343,4 +343,6 @@ def test_usage(
 ) -> None:
     assert llm.main(arguments) == code
 
-    assert capsys.readouterr().err == "Usage: training-season-llm check\n"
+    captured = capsys.readouterr()
+    assert captured.err == "Usage: training-season-llm check\n"
+    assert captured.out == ""
