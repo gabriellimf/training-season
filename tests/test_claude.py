@@ -12,6 +12,7 @@ from unittest.mock import patch
 import anthropic
 import httpx2
 import pytest
+from anthropic.resources.messages import Messages
 
 from conftest import NetworkBlockedError
 from training_season.claude import (
@@ -630,6 +631,32 @@ def test_end_turn_without_text_raises_response_error() -> None:
     assert str(raised.value) == "Claude returned no text (request_id req_test)."
 
 
+def test_unknown_stop_reason_raises_response_error() -> None:
+    payload = _message_payload(stop_reason="pause_turn")
+
+    with (
+        _adapter(_json_handler(payload)) as adapter,
+        pytest.raises(LLMResponseError) as raised,
+    ):
+        adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
+
+    assert raised.value.stop_reason == "pause_turn"
+    assert raised.value.request_id == "req_test"
+    assert str(raised.value) == (
+        "Claude returned an unsupported stop reason (request_id req_test)."
+    )
+
+
+def test_stop_sequence_without_text_returns_empty_reply() -> None:
+    payload = _message_payload(content=[], stop_reason="stop_sequence")
+
+    with _adapter(_json_handler(payload)) as adapter:
+        reply = adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
+
+    assert reply.text == ""
+    assert reply.stop_reason == "stop_sequence"
+
+
 def test_client_built_with_max_retries_2_and_otel_off() -> None:
     with patch("training_season.claude.anthropic.Anthropic") as sdk_client:
         new_anthropic_client(_config())
@@ -741,6 +768,7 @@ def test_connection_error_retried_then_unavailable() -> None:
     assert attempts == 3
     assert raised.value.status_code is None
     assert raised.value.error_type == "connection"
+    assert str(raised.value) == "Could not reach Anthropic after retries (connection)."
 
 
 def test_timeout_retried_then_unavailable() -> None:
@@ -757,6 +785,7 @@ def test_timeout_retried_then_unavailable() -> None:
     assert attempts == 3
     assert raised.value.status_code is None
     assert raised.value.error_type == "timeout"
+    assert str(raised.value) == "Could not reach Anthropic after retries (timeout)."
 
 
 @pytest.mark.parametrize(
@@ -797,6 +826,16 @@ def test_status_maps_to_adapter_error(
     assert raised.value.status_code == status_code
     assert raised.value.error_type == error_type
     assert raised.value.request_id == "req_test"
+    phrases: dict[type[LLMError], str] = {
+        LLMAuthenticationError: "rejected the API key",
+        LLMRateLimitedError: "rate-limited the request after retries",
+        LLMUnavailableError: "is unavailable after retries",
+        LLMRequestRejectedError: "rejected the request",
+    }
+    assert str(raised.value) == (
+        f"Anthropic {phrases[expected_error]} "
+        f"(HTTP {status_code}, {error_type}, request_id req_test)."
+    )
 
 
 def test_error_message_excludes_server_text() -> None:
@@ -921,13 +960,10 @@ def test_sdk_response_validation_error_maps_safely(
     with (
         caplog.at_level(logging.WARNING),
         _adapter(_json_handler(_message_payload())) as adapter,
+        patch.object(Messages, "create", side_effect=sdk_error),
+        pytest.raises(LLMResponseError) as raised,
     ):
-        client = adapter._get_client()
-        with (
-            patch.object(client.messages, "create", side_effect=sdk_error),
-            pytest.raises(LLMResponseError) as raised,
-        ):
-            adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
+        adapter.complete(LLMJob.PLAN, system="system", turns=_turns())
 
     assert str(raised.value) == (
         "Anthropic returned a response that does not match the SDK schema "
