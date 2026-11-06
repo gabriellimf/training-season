@@ -89,9 +89,11 @@ class FakeGarminServer:
     token_login_errors: list[BaseException] = field(default_factory=list)
     resume_error: BaseException | None = None
     profile_error_after_resume: BaseException | None = None
+    resume_error_after_token: BaseException | None = None
     credential_logins: int = 0
     token_logins: int = 0
     resumes: int = 0
+    login_calls: list[str] = field(default_factory=list)
     issued_state: dict[str, Any] = field(default_factory=_client_state)
     valid_code: str = _FAKE_CODE
 
@@ -109,12 +111,14 @@ class FakeGarmin(Garmin):
     def login(self, /, tokenstore: str | None = None) -> tuple[str | None, Any]:
         if tokenstore is not None:
             self.server.token_logins += 1
+            self.server.login_calls.append("token")
             self.client.load(tokenstore)
             if self.server.token_login_errors:
                 raise self.server.token_login_errors.pop(0)
             return None, None
 
         self.server.credential_logins += 1
+        self.server.login_calls.append("credential")
         outcome = (
             self.server.credential_outcomes.pop(0)
             if self.server.credential_outcomes
@@ -144,6 +148,7 @@ class FakeGarmin(Garmin):
         mfa_code: str,
     ) -> tuple[Any, Any]:
         self.server.resumes += 1
+        self.server.login_calls.append("resume")
         if self.server.resume_error is not None:
             raise self.server.resume_error
         if client_state != json.loads(json.dumps(self.server.issued_state)):
@@ -156,6 +161,8 @@ class FakeGarmin(Garmin):
         self.client.di_token = _FAKE_TOKEN
         self.client.di_refresh_token = _FAKE_REFRESH_TOKEN
         self.client.di_client_id = _FAKE_CLIENT_ID
+        if self.server.resume_error_after_token is not None:
+            raise self.server.resume_error_after_token
         if self.server.profile_error_after_resume is not None:
             raise GarminConnectAuthenticationError(
                 "Failed to retrieve social profile"
@@ -202,6 +209,46 @@ def _chain_rejected_token_error(
     error = GarminConnectAuthenticationError("Failed to retrieve social profile")
     error.__cause__ = connection_error
     return error
+
+
+_EXACT_LIBRARY_ERROR_TEXTS = {
+    ("credential", "refused"): (
+        "Garmin refused the credential login. Check the credentials or account status."
+    ),
+    ("credential", "rate-limited"): (
+        "Garmin rate-limited or blocked the login. Try again later."
+    ),
+    ("credential", "unreachable"): "Garmin is unreachable during credential login",
+    ("token", "profile could not be loaded"): (
+        "Garmin profile could not be loaded from cached tokens"
+    ),
+    ("token", "rate-limited"): (
+        "Garmin rate-limited or blocked the cached-token login. Try again later."
+    ),
+    ("token", "unreachable"): "Garmin is unreachable while loading cached tokens",
+    ("resume", "rejected the MFA code"): (
+        "Garmin rejected the MFA code. Try again or request a new code."
+    ),
+    ("resume", "rate-limited"): "Garmin rate-limited the MFA attempt. Try again later.",
+    ("resume", "unreachable"): "Garmin is unreachable while resuming MFA",
+    ("body", "rejected the authenticated session"): (
+        "Garmin rejected the authenticated session; log in again"
+    ),
+    ("body", "rate-limited"): (
+        "Garmin rate-limited the authenticated request. Try again later."
+    ),
+    ("body", "unreachable"): "Garmin is unreachable during the authenticated request",
+}
+
+
+def _app_log_records(
+    caplog: pytest.LogCaptureFixture,
+) -> list[tuple[str, int, str]]:
+    return [
+        (record.name, record.levelno, record.getMessage())
+        for record in caplog.records
+        if record.name.startswith("training_season")
+    ]
 
 
 def _begin_mfa(
@@ -300,9 +347,15 @@ def test_first_run_without_cache_logs_in_and_writes_token(
 
     token_path = token_file_path(str(auth_config.token_dir))
     assert fake_server.credential_logins == 1
+    assert fake_server.login_calls == ["credential", "token"]
     assert token_path.is_file()
     assert token_path.stat().st_mode & 0o777 == 0o600
     assert auth_config.token_dir.stat().st_mode & 0o777 == 0o700
+    assert sorted(p.name for p in auth_config.token_dir.iterdir()) == [
+        "garmin.lock",
+        "garmin_tokens.json",
+    ]
+    assert (auth_config.token_dir / "garmin.lock").stat().st_mode & 0o777 == 0o600
 
 
 def test_second_run_reuses_token_without_credential_login(
@@ -317,6 +370,7 @@ def test_second_run_reuses_token_without_credential_login(
 
     assert fake_server.credential_logins == 1
     assert fake_server.token_logins == 2
+    assert fake_server.login_calls == ["credential", "token", "token"]
 
 
 def test_second_run_works_without_credentials_in_environment(
@@ -331,6 +385,7 @@ def test_second_run_works_without_credentials_in_environment(
         assert session.login_reason is None
 
     assert fake_server.credential_logins == 0
+    assert fake_server.login_calls == ["token"]
 
 
 def test_mfa_required_saves_state_and_raises(
@@ -347,6 +402,21 @@ def test_mfa_required_saves_state_and_raises(
     assert data["reason"] == GarminLoginReason.NO_TOKEN.value
     assert isinstance(data["created_at"], str)
     assert data["client_state"] == fake_server.issued_state
+    assert state_path.read_text(encoding="utf-8") == json.dumps(
+        {
+            "version": 1,
+            "created_at": data["created_at"],
+            "reason": "no_token",
+            "client_state": fake_server.issued_state,
+        },
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    assert sorted(p.name for p in auth_config.token_dir.iterdir()) == [
+        "garmin.lock",
+        "garmin_mfa_state.json",
+    ]
+    assert (auth_config.token_dir / "garmin.lock").stat().st_mode & 0o777 == 0o600
 
 
 def test_mfa_resume_in_new_instance_uses_only_disk_state(
@@ -365,6 +435,7 @@ def test_mfa_resume_in_new_instance_uses_only_disk_state(
     with garmin_session(auth_config, factory=factory) as session:
         assert session.login_reason is None
     assert fake_server.credential_logins == 1
+    assert fake_server.login_calls == ["credential", "resume", "token"]
 
 
 def test_mfa_pending_blocks_new_credential_login(
@@ -496,13 +567,19 @@ def test_mfa_corrupt_state_file_is_deleted_and_reported(
 
 
 @pytest.mark.parametrize(
-    "profile_error",
+    ("profile_error", "raised_directly"),
     [
         pytest.param(
             GarminConnectConnectionError("profile unavailable"),
+            False,
             id="connection-error",
         ),
-        pytest.param(ValueError("invalid profile response"), id="value-error"),
+        pytest.param(ValueError("invalid profile response"), False, id="value-error"),
+        pytest.param(
+            GarminConnectConnectionError("profile unavailable"),
+            True,
+            id="direct-connection-error",
+        ),
     ],
 )
 def test_mfa_accepted_but_profile_failed_keeps_token(
@@ -510,9 +587,14 @@ def test_mfa_accepted_but_profile_failed_keeps_token(
     fake_server: FakeGarminServer,
     factory: GarminFactory,
     profile_error: BaseException,
+    *,
+    raised_directly: bool,
 ) -> None:
     _begin_mfa(auth_config, fake_server, factory)
-    fake_server.profile_error_after_resume = profile_error
+    if raised_directly:
+        fake_server.resume_error_after_token = profile_error
+    else:
+        fake_server.profile_error_after_resume = profile_error
 
     with pytest.raises(GarminUnavailableError, match="token is saved"):
         submit_mfa_code(auth_config, _FAKE_CODE, factory=factory)
@@ -587,7 +669,15 @@ def test_rejected_token_falls_back_to_credential_login(
         assert session.login_reason is GarminLoginReason.TOKEN_REJECTED
 
     assert fake_server.credential_logins == 1
+    assert fake_server.login_calls == ["token", "credential", "token"]
     assert "expired or revoked" in caplog.text
+    assert _app_log_records(caplog) == [
+        (
+            "training_season.garmin_auth",
+            logging.WARNING,
+            "Garmin rejected the cached token (expired or revoked); logging in again",
+        )
+    ]
 
 
 def test_rejected_token_with_mfa_raises_mfa_required_naming_expiry(
@@ -608,6 +698,7 @@ def test_rejected_token_with_mfa_raises_mfa_required_naming_expiry(
     data = json.loads(
         (auth_config.token_dir / "garmin_mfa_state.json").read_text(encoding="utf-8")
     )
+    assert fake_server.login_calls == ["token", "credential"]
     assert error.value.reason is GarminLoginReason.TOKEN_REJECTED
     assert data["reason"] == GarminLoginReason.TOKEN_REJECTED.value
 
@@ -622,12 +713,16 @@ def test_rejected_token_without_credentials_raises_token_expired(
     config_without_credentials = replace(auth_config, email=None, password=None)
 
     with (
-        pytest.raises(GarminTokenExpiredError, match="not set"),
+        pytest.raises(GarminTokenExpiredError, match="not set") as raised,
         garmin_session(config_without_credentials, factory=factory),
     ):
         pass
 
     assert fake_server.credential_logins == 0
+    assert str(raised.value) == (
+        "Garmin rejected the cached token (expired or revoked), and "
+        "GARMIN_EMAIL and GARMIN_PASSWORD are not set"
+    )
 
 
 def test_unreadable_token_file_triggers_credential_login(
@@ -644,7 +739,15 @@ def test_unreadable_token_file_triggers_credential_login(
         assert session.login_reason is GarminLoginReason.TOKEN_UNREADABLE
 
     assert fake_server.credential_logins == 1
+    assert fake_server.login_calls == ["credential", "token"]
     assert "token cache is unreadable" in caplog.text
+    assert _app_log_records(caplog) == [
+        (
+            "training_season.garmin_auth",
+            logging.WARNING,
+            "Garmin token cache is unreadable; logging in again",
+        )
+    ]
 
 
 def test_outage_during_token_login_raises_unavailable_without_credential_login(
@@ -786,7 +889,64 @@ def test_library_errors_map_to_named_causes(
     with pytest.raises(expected_error) as error:
         trigger_failure()
 
+    assert error.value.__cause__ is library_error
     assert message_part in str(error.value)
+    assert str(error.value) == _EXACT_LIBRARY_ERROR_TEXTS[failure_point, message_part]
+
+
+@pytest.mark.parametrize(
+    ("library_error", "expected_error", "text"),
+    [
+        pytest.param(
+            _chain_rejected_token_error(),
+            GarminTokenExpiredError,
+            "Garmin rejected the saved token (expired or revoked)",
+            id="saved-rejected",
+        ),
+        pytest.param(
+            GarminConnectAuthenticationError("profile failed"),
+            GarminUnavailableError,
+            "Garmin could not load the saved token or profile",
+            id="saved-profile",
+        ),
+        pytest.param(
+            GarminConnectTooManyRequestsError("limited"),
+            GarminRateLimitedError,
+            "Garmin rate-limited or blocked the login. Try again later.",
+            id="saved-rate-limited",
+        ),
+        pytest.param(
+            GarminConnectConnectionError("offline"),
+            GarminUnavailableError,
+            "Garmin is unreachable while loading the saved token",
+            id="saved-unreachable",
+        ),
+        pytest.param(
+            OSError("disk"),
+            GarminTokenCacheError,
+            "Garmin token cache cannot be written",
+            id="saved-cache-write",
+        ),
+    ],
+)
+def test_saved_token_load_errors_after_credential_login(
+    auth_config: GarminAuthConfig,
+    fake_server: FakeGarminServer,
+    factory: GarminFactory,
+    library_error: BaseException,
+    expected_error: type[GarminError],
+    text: str,
+) -> None:
+    fake_server.token_login_errors.append(library_error)
+
+    with (
+        pytest.raises(expected_error) as raised,
+        garmin_session(auth_config, factory=factory),
+    ):
+        pass
+
+    assert str(raised.value) == text
+    assert fake_server.login_calls == ["credential", "token"]
 
 
 def test_errors_logs_and_cli_output_never_contain_secrets(
