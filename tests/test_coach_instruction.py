@@ -171,7 +171,9 @@ def test_missing_file_fails(tmp_path: Path) -> None:
     with pytest.raises(CoachInstructionFileError) as error:
         _load_path(path)
 
-    assert str(path) in str(error.value)
+    assert str(error.value) == f"Coaching instruction file not found: {path}"
+    assert error.value.__cause__ is None
+    assert error.value.__suppress_context__ is True
 
 
 def test_long_path_fails(tmp_path: Path) -> None:
@@ -180,7 +182,10 @@ def test_long_path_fails(tmp_path: Path) -> None:
     with pytest.raises(CoachInstructionFileError) as error:
         _load_path(path)
 
-    assert str(path) in str(error.value)
+    assert str(error.value).startswith(
+        f"Cannot read coaching instruction file {path}: "
+    )
+    assert isinstance(error.value.__cause__, OSError)
 
 
 def test_check_long_path_exits_2_without_traceback(
@@ -203,7 +208,9 @@ def test_directory_fails(tmp_path: Path) -> None:
     with pytest.raises(CoachInstructionFileError) as error:
         _load_path(path)
 
-    assert str(path) in str(error.value)
+    assert str(error.value) == (
+        f"Coaching instruction path is a directory, not a file: {path}"
+    )
 
 
 def test_fifo_fails_without_blocking(tmp_path: Path) -> None:
@@ -213,7 +220,9 @@ def test_fifo_fails_without_blocking(tmp_path: Path) -> None:
     with pytest.raises(CoachInstructionFileError) as error:
         _load_path(path)
 
-    assert str(path) in str(error.value)
+    assert str(error.value) == (
+        f"Coaching instruction path is not a regular file: {path}"
+    )
 
 
 @pytest.mark.skipif(
@@ -227,7 +236,11 @@ def test_unreadable_file_fails(tmp_path: Path) -> None:
     with pytest.raises(CoachInstructionFileError) as error:
         _load_path(path)
 
-    assert str(path) in str(error.value)
+    assert str(error.value) == (
+        f"Cannot read coaching instruction file {path}: Permission denied"
+    )
+    assert type(error.value.__cause__) is PermissionError
+    assert error.value.__context__ is error.value.__cause__
 
 
 @pytest.mark.skipif(
@@ -243,7 +256,11 @@ def test_inaccessible_parent_directory_fails(tmp_path: Path) -> None:
     try:
         with pytest.raises(CoachInstructionFileError) as error:
             _load_path(path)
-        assert str(path) in str(error.value)
+        assert str(error.value) == (
+            f"Cannot read coaching instruction file {path}: Permission denied"
+        )
+        assert type(error.value.__cause__) is PermissionError
+        assert error.value.__context__ is error.value.__cause__
     finally:
         parent.chmod(0o700)
 
@@ -256,7 +273,10 @@ def test_file_over_size_cap_fails(tmp_path: Path) -> None:
     with pytest.raises(CoachInstructionFileError) as error:
         _load_path(path)
 
-    assert str(path) in str(error.value)
+    assert str(error.value) == (
+        f"Coaching instruction file is larger than {MAX_COACH_INSTRUCTION_BYTES} "
+        f"bytes: {path}"
+    )
 
 
 def test_file_at_size_cap_loads(tmp_path: Path) -> None:
@@ -282,7 +302,7 @@ def test_empty_file_fails(tmp_path: Path, content: bytes) -> None:
     with pytest.raises(CoachInstructionFileError) as error:
         _load_path(path)
 
-    assert str(path) in str(error.value)
+    assert str(error.value) == f"Coaching instruction file is empty: {path}"
 
 
 def test_invalid_utf8_fails_with_offset(tmp_path: Path) -> None:
@@ -291,8 +311,11 @@ def test_invalid_utf8_fails_with_offset(tmp_path: Path) -> None:
     with pytest.raises(CoachInstructionFileError) as error:
         _load_path(path)
 
-    assert "byte 2" in str(error.value)
-    assert str(path) in str(error.value)
+    assert str(error.value) == (
+        f"Coaching instruction file is not valid UTF-8 at byte 2: {path}"
+    )
+    assert error.value.__cause__ is None
+    assert error.value.__suppress_context__ is True
 
 
 def test_bom_is_removed(tmp_path: Path) -> None:
@@ -466,6 +489,16 @@ def test_load_logs_path_not_text(
     assert len(records) == 1
     assert str(path) in records[0].getMessage()
     assert sentinel not in caplog.text
+    assert [(r.name, r.levelno, r.getMessage()) for r in records] == [
+        (
+            coach_instruction.__name__,
+            logging.INFO,
+            (
+                "Loaded coaching instruction source=COACH_INSTRUCTION_PATH "
+                f"path={path} bytes=40 placeholders=none"
+            ),
+        )
+    ]
 
 
 def test_render_logs_nothing(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:

@@ -239,9 +239,12 @@ def test_migrate_failure_rolls_back_whole_run(database_path: Path) -> None:
         Migration(2, "0002_failing.sql", "CREATE TABLE created_first (value TEXT);"),
     )
 
+    statements: list[str] = []
     with closing(connect(database_path)) as connection:
-        with pytest.raises(MigrationError, match=r"0002_failing\.sql"):
+        connection.set_trace_callback(statements.append)
+        with pytest.raises(MigrationError, match=r"0002_failing\.sql") as raised:
             migrate(connection, migrations)
+        connection.set_trace_callback(None)
         tables = connection.execute(
             "SELECT name FROM sqlite_master "
             "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
@@ -250,6 +253,69 @@ def test_migrate_failure_rolls_back_whole_run(database_path: Path) -> None:
 
     assert tables == []
     assert user_version == (0,)
+    assert statements == [
+        "BEGIN IMMEDIATE",
+        "PRAGMA user_version",
+        "CREATE TABLE created_first (value TEXT);",
+        "PRAGMA user_version = 1",
+        "ROLLBACK",
+    ]
+    assert str(raised.value) == (
+        "migration 0002_failing.sql failed: table created_first already exists"
+    )
+    assert type(raised.value.__cause__) is sqlite3.OperationalError
+    assert raised.value.__context__ is raised.value.__cause__
+
+
+_SQL_A = "CREATE TABLE a (value TEXT);"
+_SQL_B = "CREATE TABLE b (value TEXT);"
+
+
+@pytest.mark.parametrize(
+    ("migrations", "message"),
+    [
+        pytest.param((), "no migrations provided", id="empty"),
+        pytest.param(
+            (
+                Migration(1, "0001_a.sql", _SQL_A),
+                Migration(1, "0001_b.sql", _SQL_B),
+            ),
+            "duplicate migration version",
+            id="duplicate",
+        ),
+        pytest.param(
+            (
+                Migration(3, "0003_b.sql", _SQL_B),
+                Migration(1, "0001_a.sql", _SQL_A),
+            ),
+            "migration versions must be sequential from 1, found [3, 1]",
+            id="gap",
+        ),
+    ],
+)
+def test_migrate_rejects_bad_caller_supplied_set(
+    database_path: Path, migrations: tuple[Migration, ...], message: str
+) -> None:
+    with (
+        closing(connect(database_path)) as connection,
+        pytest.raises(MigrationError) as raised,
+    ):
+        migrate(connection, migrations)
+
+    assert str(raised.value) == message
+
+
+def test_migrate_sorts_caller_supplied_set(database_path: Path) -> None:
+    migrations = (
+        Migration(2, "0002_b.sql", _SQL_B),
+        Migration(1, "0001_a.sql", _SQL_A),
+    )
+
+    with closing(connect(database_path)) as connection:
+        result = migrate(connection, migrations)
+
+    assert result.applied == (1, 2)
+    assert result.current_version == 2
 
 
 def test_migrate_failure_keeps_previous_version(database_path: Path) -> None:
