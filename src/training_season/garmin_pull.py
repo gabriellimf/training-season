@@ -174,18 +174,19 @@ def _pull_and_print_counts() -> None:
     history_start = history_start_from_environment()
     path = database_path_from_environment()
     with closing(connect(path)) as connection:
-        result = pull_garmin(
+        pull_counts = pull_garmin(
             connection,
             auth_config,
             zone,
             history_start=history_start,
         )
     sys.stdout.write(
-        f"activities {result.activity_start}..{result.activity_end}: "
-        f"added {result.activities_added}, skipped {result.activities_skipped}, "
-        f"invalid {result.activities_invalid}; wellness "
-        f"{result.wellness_start}..{result.wellness_end}: "
-        f"{result.wellness_days_written} days\n"
+        f"activities {pull_counts.activity_start}..{pull_counts.activity_end}: "
+        f"added {pull_counts.activities_added}, "
+        f"skipped {pull_counts.activities_skipped}, "
+        f"invalid {pull_counts.activities_invalid}; wellness "
+        f"{pull_counts.wellness_start}..{pull_counts.wellness_end}: "
+        f"{pull_counts.wellness_days_written} days\n"
     )
 
 

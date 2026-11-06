@@ -118,14 +118,14 @@ def write_mfa_state(
 def _serialized_mfa_state(
     requested_at: str, reason: GarminLoginReason, client_state: dict[str, object]
 ) -> str:
-    payload = {
+    mfa_state_fields = {
         "version": _MFA_STATE_VERSION,
         "created_at": requested_at,
         "reason": reason.value,
         "client_state": client_state,
     }
     try:
-        return json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+        return json.dumps(mfa_state_fields, separators=(",", ":"), ensure_ascii=True)
     except (TypeError, ValueError) as error:
         raise GarminMfaStateInvalidError(_RETURNED_MFA_STATE_ERROR) from error
 
