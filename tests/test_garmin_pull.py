@@ -31,7 +31,12 @@ from test_garmin_auth import (
     _chain_rejected_token_error,
     _write_fake_token,
 )
-from training_season import garmin_pull
+from training_season import garmin_activities, garmin_pull, garmin_wellness
+from training_season.garmin_activities import (
+    _MAX_ACTIVITY_TYPE_DEPTH,
+    _build_type_roots,
+    _resolve_sport,
+)
 from training_season.garmin_auth import (
     GarminAuthConfig,
     GarminConfigurationError,
@@ -45,19 +50,19 @@ from training_season.garmin_auth import (
     start_login,
 )
 from training_season.garmin_pull import (
-    _MAX_ACTIVITY_TYPE_DEPTH,
     GarminPullResult,
-    _build_type_roots,
-    _non_negative,
-    _resolve_sport,
-    _vo2max_from,
     history_start_from_environment,
     pull_garmin,
 )
+from training_season.garmin_pull_base import non_negative
+from training_season.garmin_wellness import _vo2max_from
 
 _ZONE = ZoneInfo("America/Sao_Paulo")
 _NOW = datetime(2026, 10, 27, 12, 0, tzinfo=UTC)
 _TODAY = "2026-10-27"
+_HISTORY_START_MESSAGE = (
+    "GARMIN_HISTORY_START must be a valid YYYY-MM-DD date no later than today"
+)
 _SEED_TIMESTAMP = "1970-01-01T00:00:00Z"
 pytest_plugins = ("test_garmin_auth",)
 
@@ -139,8 +144,10 @@ class PullFakeGarmin(FakeGarmin):
         super().__init__(server, email, password)
         self.data = data
         self.calls: dict[str, list[tuple[object, ...]]] = {}
+        self.ordered_calls: list[tuple[str, tuple[object, ...]]] = []
 
     def _record(self, method: str, args: tuple[object, ...]) -> None:
+        self.ordered_calls.append((method, args))
         calls = self.calls.setdefault(method, [])
         call_index = len(calls)
         calls.append(args)
@@ -444,12 +451,13 @@ def test_child_type_without_parent_uses_type_map() -> None:
     assert _resolve_sport(activity_type, type_roots) == "running"
 
 
-def test_child_type_with_invalid_parent_uses_type_map() -> None:
+@pytest.mark.parametrize("parent_type_id", ["invalid", 999])
+def test_child_type_with_invalid_parent_uses_type_map(parent_type_id: object) -> None:
     type_roots = _build_type_roots(_activity_types())
     activity_type: dict[str, Any] = {
         "typeId": 3,
         "typeKey": "treadmill_running",
-        "parentTypeId": "invalid",
+        "parentTypeId": parent_type_id,
     }
 
     assert _resolve_sport(activity_type, type_roots) == "running"
@@ -466,7 +474,7 @@ def test_unknown_type_without_parent_is_skipped() -> None:
 
 
 def test_parent_cycle_is_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(garmin_pull, "_MAX_ACTIVITY_TYPE_DEPTH", 1000)
+    monkeypatch.setattr(garmin_activities, "_MAX_ACTIVITY_TYPE_DEPTH", 1000)
 
     class CountingTypeRoots(Mapping[int, tuple[str, int | None]]):
         def __init__(self) -> None:
@@ -708,8 +716,8 @@ def test_bad_numeric_values_store_null(
 
     stored = _activity_rows(migrated_connection)[0]
     assert stored[5:11] == (None, None, None, None, None, None)
-    assert _non_negative(float("nan")) is None
-    assert _non_negative(float("inf")) is None
+    assert non_negative(float("nan")) is None
+    assert non_negative(float("inf")) is None
 
 
 def test_laps_not_found_stores_null_splits(
@@ -946,7 +954,23 @@ def test_wellness_windows_are_at_most_28_days(
     )
 
     windows = clients[0].calls["get_daily_summaries"]
-    assert len(windows) > 1
+    assert windows == [
+        ("2026-08-28", "2026-09-24"),
+        ("2026-09-25", "2026-10-22"),
+        ("2026-10-23", "2026-10-27"),
+    ]
+    expected_order: list[tuple[str, tuple[object, ...]]] = []
+    for start, end in windows:
+        expected_order.append(("get_daily_summaries", (start, end)))
+        day = date.fromisoformat(cast("str", start))
+        while day <= date.fromisoformat(cast("str", end)):
+            expected_order.append(("get_hrv_data", (day.isoformat(),)))
+            expected_order.append(("get_max_metrics", (day.isoformat(),)))
+            day += timedelta(days=1)
+    wellness_methods = {"get_daily_summaries", "get_hrv_data", "get_max_metrics"}
+    assert [
+        call for call in clients[0].ordered_calls if call[0] in wellness_methods
+    ] == expected_order
     assert all(
         isinstance(start, str)
         and isinstance(end, str)
@@ -1322,11 +1346,8 @@ def test_activity_commit_failure_rolls_back_current_unit_and_rerun_matches_clean
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     history_start = "2026-10-24"
-    monkeypatch.setattr(
-        garmin_pull,
-        "utc_now",
-        lambda: "2026-10-27T12:00:00Z",
-    )
+    for module in (garmin_activities, garmin_wellness):
+        monkeypatch.setattr(module, "utc_now", lambda: "2026-10-27T12:00:00Z")
     migrated_connection.execute(
         """
         CREATE TRIGGER reject_activity
@@ -1507,6 +1528,102 @@ def test_no_write_transaction_is_open_during_garmin_calls(
         assert callback_counts[method_name] == len(clients[0].calls[method_name])
 
 
+def test_pull_calls_garmin_in_fixed_order(
+    migrated_connection: sqlite3.Connection,
+    auth_config: GarminAuthConfig,
+    fake_server: FakeGarminServer,
+) -> None:
+    activities = [
+        _activity(1, "2026-10-24 08:00:00"),
+        _activity(2, "2026-10-25 08:00:00", "swimming", type_id=2),
+    ]
+    data = FakeGarminData(
+        activities=activities,
+        oldest_activity=activities[0],
+        activity_laps={
+            "1": {"lapDTOs": [{"lapIndex": 1}]},
+            "2": {"lapDTOs": [{"lapIndex": 1}]},
+        },
+        daily_summaries=[_daily_summary("2026-10-24", restingHeartRate=50)],
+    )
+
+    _, clients = _run_pull(migrated_connection, auth_config, fake_server, data)
+
+    days = ("2026-10-24", "2026-10-25", "2026-10-26", "2026-10-27")
+    assert clients[0].ordered_calls == [
+        ("get_activity_types", ()),
+        ("count_activities", ()),
+        ("get_activities", (1, 1, None, None)),
+        ("get_activities_by_date", ("2026-10-23", "2026-10-28", None, "asc")),
+        ("get_activity_laps", ("1",)),
+        ("get_activity_laps", ("2",)),
+        ("get_daily_summaries", ("2026-10-24", "2026-10-27")),
+        *[
+            (method, (day,))
+            for day in days
+            for method in ("get_hrv_data", "get_max_metrics")
+        ],
+    ]
+
+
+def test_pull_logs_activity_and_wellness_counts(
+    migrated_connection: sqlite3.Connection,
+    auth_config: GarminAuthConfig,
+    fake_server: FakeGarminServer,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="training_season.garmin_pull")
+    data = FakeGarminData(
+        activities=[
+            _activity(1),
+            _activity(2),
+            _activity(3, type_key="cycling", type_id=7),
+            "not-an-object",
+            _activity(4, start_time="not-a-time"),
+            _activity(5, activityId=True),
+        ],
+        daily_summaries=[_daily_summary("2026-10-25", restingHeartRate=50)],
+    )
+
+    _run_pull(
+        migrated_connection,
+        auth_config,
+        fake_server,
+        data,
+        history_start="2026-10-24",
+    )
+
+    assert [
+        (record.levelno, record.getMessage())
+        for record in caplog.records
+        if record.name == "training_season.garmin_pull"
+    ] == [
+        (
+            logging.INFO,
+            "activities 2026-10-24..2026-10-28: added 2, skipped 1, invalid 3",
+        ),
+        (logging.INFO, "wellness 2026-10-24..2026-10-27: wrote 1 days"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        ["not-a-dict"],
+        [{"typeId": True, "typeKey": "running", "parentTypeId": None}],
+        [{"typeId": 1, "typeKey": " ", "parentTypeId": None}],
+        [{"typeId": 1, "typeKey": "running", "parentTypeId": True}],
+        [{"typeId": 1, "typeKey": "running", "parentTypeId": None}] * 2,
+    ],
+    ids=["not-dict", "bool-type-id", "blank-type-key", "bool-parent", "duplicate-id"],
+)
+def test_build_type_roots_rejects_bad_entries(entries: list[object]) -> None:
+    with pytest.raises(GarminUnavailableError) as raised:
+        _build_type_roots(entries)
+
+    assert str(raised.value) == "Garmin returned an unexpected activity type list"
+
+
 def test_lock_is_held_for_the_whole_pull(
     migrated_connection: sqlite3.Connection,
     auth_config: GarminAuthConfig,
@@ -1644,6 +1761,7 @@ def test_history_start_from_environment_parses_or_rejects() -> None:
         with pytest.raises(GarminConfigurationError) as raised:
             history_start_from_environment({"GARMIN_HISTORY_START": value})
         assert value not in str(raised.value)
+        assert str(raised.value) == _HISTORY_START_MESSAGE
 
 
 def test_history_start_bounds_first_run_without_oldest_lookup(
@@ -1753,6 +1871,7 @@ def test_history_start_in_the_future_fails_before_garmin_calls(
         )
 
     assert future_date not in str(raised.value)
+    assert str(raised.value) == _HISTORY_START_MESSAGE
     assert clients == []
     assert data.errors == {}
 
