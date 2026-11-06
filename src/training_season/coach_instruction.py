@@ -72,19 +72,27 @@ class CoachInstruction:
         """Render the instruction with current profile and state values."""
         today_text = training_date(now, zone)
         today = date.fromisoformat(today_text)
-        athlete_value = (
-            MISSING_VALUE if athlete_name is None else athlete_name.strip()
-        ) or MISSING_VALUE
+        athlete_value = _athlete_name_value(athlete_name)
         race_value = MISSING_VALUE if race_date is None else race_date.isoformat()
-        weeks_value = (
-            MISSING_VALUE if race_date is None else str(weeks_to_race(today, race_date))
-        )
+        weeks_value = _weeks_to_race_value(today, race_date)
         return Template(self.text).substitute(
             today=today_text,
             athlete_name=athlete_value,
             race_date=race_value,
             weeks_to_race=weeks_value,
         )
+
+
+def _athlete_name_value(athlete_name: str | None) -> str:
+    if athlete_name is None:
+        return MISSING_VALUE
+    return athlete_name.strip() or MISSING_VALUE
+
+
+def _weeks_to_race_value(today: date, race_date: date | None) -> str:
+    if race_date is None:
+        return MISSING_VALUE
+    return str(weeks_to_race(today, race_date))
 
 
 def coach_instruction_path_from_environment(
@@ -137,26 +145,28 @@ def _validated_placeholders(text: str, path: Path) -> frozenset[str]:
     return identifiers
 
 
-def load_coach_instruction(
-    environ: Mapping[str, str] | None = None,
-) -> CoachInstruction:
-    """Read, validate, and return the configured coaching instruction."""
-    environment = os.environ if environ is None else environ
-    configured_path = environment.get(COACH_INSTRUCTION_PATH_ENV, "").strip()
-    path = coach_instruction_path_from_environment(environment)
+def _unreadable_instruction_error(
+    path: Path, error: OSError
+) -> CoachInstructionFileError:
+    detail = error.strerror or type(error).__name__
+    return CoachInstructionFileError(
+        f"Cannot read coaching instruction file {path}: {detail}"
+    )
 
+
+def _instruction_file_mode(path: Path) -> int:
     try:
-        mode = path.stat().st_mode
+        return path.stat().st_mode
     except (FileNotFoundError, NotADirectoryError):
         raise CoachInstructionFileError(
             f"Coaching instruction file not found: {path}"
         ) from None
     except OSError as error:
-        detail = error.strerror or type(error).__name__
-        raise CoachInstructionFileError(
-            f"Cannot read coaching instruction file {path}: {detail}"
-        ) from error
+        raise _unreadable_instruction_error(path, error) from error
 
+
+def _require_instruction_file(path: Path) -> None:
+    mode = _instruction_file_mode(path)
     if stat.S_ISDIR(mode):
         raise CoachInstructionFileError(
             f"Coaching instruction path is a directory, not a file: {path}"
@@ -166,21 +176,24 @@ def load_coach_instruction(
             f"Coaching instruction path is not a regular file: {path}"
         )
 
+
+def _read_instruction_bytes(path: Path) -> bytes:
+    _require_instruction_file(path)
     try:
         with path.open("rb") as instruction_file:
             raw_text = instruction_file.read(MAX_COACH_INSTRUCTION_BYTES + 1)
     except OSError as error:
-        detail = error.strerror or type(error).__name__
-        raise CoachInstructionFileError(
-            f"Cannot read coaching instruction file {path}: {detail}"
-        ) from error
+        raise _unreadable_instruction_error(path, error) from error
 
     if len(raw_text) > MAX_COACH_INSTRUCTION_BYTES:
         raise CoachInstructionFileError(
             f"Coaching instruction file is larger than "
             f"{MAX_COACH_INSTRUCTION_BYTES} bytes: {path}"
         )
+    return raw_text
 
+
+def _decoded_instruction_text(raw_text: bytes, path: Path) -> str:
     try:
         text = raw_text.decode("utf-8-sig", errors="strict")
     except UnicodeDecodeError as error:
@@ -191,25 +204,40 @@ def load_coach_instruction(
 
     if not text.strip():
         raise CoachInstructionFileError(f"Coaching instruction file is empty: {path}")
+    return text
 
-    placeholders = _validated_placeholders(text, path)
-    from_environment = bool(configured_path)
-    source = COACH_INSTRUCTION_PATH_ENV if from_environment else "default"
-    placeholder_summary = ",".join(sorted(placeholders)) or "none"
+
+def _log_loaded_instruction(instruction: CoachInstruction) -> None:
+    source = COACH_INSTRUCTION_PATH_ENV if instruction.from_environment else "default"
+    placeholder_summary = ",".join(sorted(instruction.placeholders)) or "none"
     _LOGGER.info(
         "Loaded coaching instruction source=%s path=%s bytes=%d placeholders=%s",
         source,
-        path,
-        len(raw_text),
+        instruction.path,
+        instruction.size_bytes,
         placeholder_summary,
     )
-    return CoachInstruction(
+
+
+def load_coach_instruction(
+    environ: Mapping[str, str] | None = None,
+) -> CoachInstruction:
+    """Read, validate, and return the configured coaching instruction."""
+    environment = os.environ if environ is None else environ
+    from_environment = bool(environment.get(COACH_INSTRUCTION_PATH_ENV, "").strip())
+    path = coach_instruction_path_from_environment(environment)
+    raw_text = _read_instruction_bytes(path)
+    text = _decoded_instruction_text(raw_text, path)
+    placeholders = _validated_placeholders(text, path)
+    instruction = CoachInstruction(
         path=path,
         text=text,
         placeholders=placeholders,
         from_environment=from_environment,
         size_bytes=len(raw_text),
     )
+    _log_loaded_instruction(instruction)
+    return instruction
 
 
 def weeks_to_race(today: date, race_date: date) -> int:

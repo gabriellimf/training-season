@@ -4,7 +4,9 @@ import logging
 import sqlite3
 import threading
 import time
+from collections.abc import Callable
 from contextlib import closing
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -23,6 +25,31 @@ from training_season.database import (
     transaction,
 )
 from training_season.timeformat import utc_now
+
+_ABSOLUTE_PATH_TEXT = "DATABASE_PATH must be an absolute path to the SQLite file"
+
+
+@dataclass
+class SqlStatementRecorder:
+    real_connect: Callable[..., sqlite3.Connection]
+    statements: list[str] = field(default_factory=list)
+
+    def connect(self, *args: object, **kwargs: object) -> sqlite3.Connection:
+        connection = self.real_connect(*args, **kwargs)
+        connection.set_trace_callback(self.statements.append)
+        return connection
+
+
+def _deny_rollback(
+    action: int,
+    argument_one: str | None,
+    _argument_two: str | None,
+    _database_name: str | None,
+    _trigger_name: str | None,
+) -> int:
+    if action == sqlite3.SQLITE_TRANSACTION and argument_one == "ROLLBACK":
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
 
 
 def _insert_then_fail(connection: sqlite3.Connection) -> None:
@@ -49,19 +76,25 @@ def test_database_path_reads_environment_variable(database_path: Path) -> None:
 
 
 def test_database_path_unset_raises() -> None:
-    with pytest.raises(DatabaseConfigurationError, match="DATABASE_PATH"):
+    with pytest.raises(DatabaseConfigurationError, match="DATABASE_PATH") as error:
         database_path_from_environment({})
+
+    assert str(error.value) == _ABSOLUTE_PATH_TEXT
 
 
 @pytest.mark.parametrize("value", ["", "   "])
 def test_database_path_blank_raises(value: str) -> None:
-    with pytest.raises(DatabaseConfigurationError, match="DATABASE_PATH"):
+    with pytest.raises(DatabaseConfigurationError, match="DATABASE_PATH") as error:
         database_path_from_environment({"DATABASE_PATH": value})
+
+    assert str(error.value) == _ABSOLUTE_PATH_TEXT
 
 
 def test_database_path_relative_raises() -> None:
-    with pytest.raises(DatabaseConfigurationError, match="absolute path"):
+    with pytest.raises(DatabaseConfigurationError, match="absolute path") as error:
         database_path_from_environment({"DATABASE_PATH": "training-season.db"})
+
+    assert str(error.value) == _ABSOLUTE_PATH_TEXT
 
 
 def test_database_path_missing_parent_raises(tmp_path: Path) -> None:
@@ -71,7 +104,7 @@ def test_database_path_missing_parent_raises(tmp_path: Path) -> None:
             {"DATABASE_PATH": str(missing_parent / "training-season.db")}
         )
 
-    assert str(missing_parent) in str(error.value)
+    assert str(error.value) == f"parent directory does not exist: {missing_parent}"
 
 
 def test_database_path_parent_is_file_raises(tmp_path: Path) -> None:
@@ -83,12 +116,17 @@ def test_database_path_parent_is_file_raises(tmp_path: Path) -> None:
             {"DATABASE_PATH": str(parent_file / "training-season.db")}
         )
 
-    assert str(parent_file) in str(error.value)
+    assert str(error.value) == f"parent path is not a directory: {parent_file}"
 
 
 def test_database_path_is_directory_raises(tmp_path: Path) -> None:
-    with pytest.raises(DatabaseConfigurationError, match="not a directory"):
+    with pytest.raises(DatabaseConfigurationError, match="not a directory") as error:
         database_path_from_environment({"DATABASE_PATH": str(tmp_path)})
+
+    assert (
+        str(error.value)
+        == f"DATABASE_PATH must name a file, not a directory: {tmp_path}"
+    )
 
 
 def test_connect_enables_foreign_keys(database_path: Path) -> None:
@@ -129,19 +167,8 @@ def test_transaction_rolls_back_on_error(database_path: Path) -> None:
 def test_transaction_preserves_body_error_when_rollback_fails(
     database_path: Path,
 ) -> None:
-    def deny_rollback(
-        action: int,
-        argument_one: str | None,
-        _argument_two: str | None,
-        _database_name: str | None,
-        _trigger_name: str | None,
-    ) -> int:
-        if action == sqlite3.SQLITE_TRANSACTION and argument_one == "ROLLBACK":
-            return sqlite3.SQLITE_DENY
-        return sqlite3.SQLITE_OK
-
     with closing(connect(database_path)) as connection:
-        connection.set_authorizer(deny_rollback)
+        connection.set_authorizer(_deny_rollback)
         try:
             with (
                 pytest.raises(ValueError, match="original body error") as error,
@@ -155,6 +182,24 @@ def test_transaction_preserves_body_error_when_rollback_fails(
     assert str(error.value) == "original body error"
     assert isinstance(error.value.__cause__, sqlite3.Error)
     assert str(error.value.__cause__) == "not authorized"
+
+
+def test_transaction_keeps_commit_error_when_rollback_fails(
+    migrated_connection: sqlite3.Connection,
+) -> None:
+    migrated_connection.set_authorizer(_deny_rollback)
+    try:
+        with pytest.raises(sqlite3.IntegrityError) as raised:
+            _insert_deferred_invalid_message(migrated_connection)
+    finally:
+        migrated_connection.set_authorizer(None)
+
+    assert type(raised.value) is sqlite3.IntegrityError
+    assert str(raised.value) == "FOREIGN KEY constraint failed"
+    assert isinstance(raised.value.__cause__, sqlite3.DatabaseError)
+    assert str(raised.value.__cause__) == "not authorized"
+    assert migrated_connection.in_transaction
+    migrated_connection.execute("ROLLBACK")
 
 
 def test_transaction_rolls_back_after_commit_error(
@@ -199,6 +244,59 @@ def test_initialize_database_creates_file_and_enables_wal(
     assert result.current_version == 1
     with closing(connect(database_path)) as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+
+
+def test_initialize_database_statement_order_and_log(
+    database_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    recorder = SqlStatementRecorder(real_connect=sqlite3.connect)
+    monkeypatch.setattr(sqlite3, "connect", recorder.connect)
+    environment = {"DATABASE_PATH": str(database_path)}
+
+    with caplog.at_level(logging.INFO, logger="training_season.database"):
+        initialize_database(environment)
+        fresh = list(recorder.statements)
+        recorder.statements.clear()
+        initialize_database(environment)
+
+    assert fresh[:6] == [
+        "PRAGMA foreign_keys = ON",
+        "PRAGMA foreign_keys",
+        "PRAGMA journal_mode",
+        "PRAGMA journal_mode = WAL",
+        "BEGIN IMMEDIATE",
+        "PRAGMA user_version",
+    ]
+    assert fresh[-2:] == ["PRAGMA user_version = 1", "COMMIT"]
+    assert fresh.count("BEGIN IMMEDIATE") == 1
+    assert fresh.count("COMMIT") == 1
+    assert "ROLLBACK" not in fresh
+    assert recorder.statements == [
+        "PRAGMA foreign_keys = ON",
+        "PRAGMA foreign_keys",
+        "PRAGMA journal_mode",
+        "BEGIN IMMEDIATE",
+        "PRAGMA user_version",
+        "COMMIT",
+    ]
+    assert [
+        (record.name, record.levelno, record.getMessage())
+        for record in caplog.records
+        if record.name == "training_season.database"
+    ] == [
+        (
+            "training_season.database",
+            logging.INFO,
+            f"database {database_path} at schema version 1, applied [1]",
+        ),
+        (
+            "training_season.database",
+            logging.INFO,
+            f"database {database_path} at schema version 1, applied none",
+        ),
+    ]
 
 
 def test_wal_switch_retries_until_lock_released(
@@ -255,12 +353,15 @@ def test_wal_switch_times_out_at_injected_deadline(
 ) -> None:
     with closing(connect(database_path)) as lock_connection:
         lock_connection.execute("BEGIN IMMEDIATE")
-        with pytest.raises(sqlite3.OperationalError, match="locked"):
+        with pytest.raises(sqlite3.OperationalError, match="locked") as raised:
             initialize_database(
                 {"DATABASE_PATH": str(database_path)},
                 wal_retry_timeout=0.05,
             )
 
+        assert str(raised.value) == "database is locked"
+        assert raised.value.__cause__ is None
+        assert raised.value.__context__ is None
         lock_connection.execute("ROLLBACK")
         assert lock_connection.execute("PRAGMA journal_mode").fetchone() == ("delete",)
 
