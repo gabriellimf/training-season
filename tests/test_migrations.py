@@ -1,42 +1,20 @@
-"""Tests for migration loading, atomicity, and concurrency."""
+"""Tests for migration loading, atomicity, and rollback."""
 
 import hashlib
-import os
 import sqlite3
-import subprocess
-import sys
-import threading
-import time
 from contextlib import closing
 from pathlib import Path
 
 import pytest
 
+from schema_rows import _CREATED_AT, _TABLE_NAMES, _WEEK_END, _WEEK_START
 from training_season.database import (
     Migration,
     MigrationError,
-    MigrationResult,
     connect,
     load_migrations,
     migrate,
 )
-
-_TABLE_NAMES = (
-    "profile",
-    "macro_plan",
-    "macro_revision",
-    "weekly_plan",
-    "workout",
-    "activity",
-    "wellness",
-    "checkin",
-    "message",
-    "coach_summary",
-)
-
-_CREATED_AT = "2026-10-26T00:00:00Z"
-_WEEK_START = "2026-10-26"
-_WEEK_END = "2026-11-01"
 
 
 def _schema_snapshot(
@@ -172,7 +150,7 @@ def test_load_migrations_rejects_empty_file(tmp_path: Path) -> None:
 
 def test_migrate_fresh_database_creates_all_tables(database_path: Path) -> None:
     with closing(connect(database_path)) as connection:
-        result = migrate(connection)
+        migration_result = migrate(connection)
         tables = [
             row[0]
             for row in connection.execute(
@@ -195,8 +173,8 @@ def test_migrate_fresh_database_creates_all_tables(database_path: Path) -> None:
         "checkin_week_start",
         "macro_plan_single_active",
     ]
-    assert user_version == (result.current_version,)
-    assert result.applied == (1,)
+    assert user_version == (migration_result.current_version,)
+    assert migration_result.applied == (1,)
 
 
 def test_migrate_twice_changes_nothing(database_path: Path) -> None:
@@ -312,10 +290,10 @@ def test_migrate_sorts_caller_supplied_set(database_path: Path) -> None:
     )
 
     with closing(connect(database_path)) as connection:
-        result = migrate(connection, migrations)
+        migration_result = migrate(connection, migrations)
 
-    assert result.applied == (1, 2)
-    assert result.current_version == 2
+    assert migration_result.applied == (1, 2)
+    assert migration_result.current_version == 2
 
 
 def test_migrate_failure_keeps_previous_version(database_path: Path) -> None:
@@ -395,130 +373,3 @@ def test_migrate_refuses_newer_database(database_path: Path) -> None:
 
     assert tables == []
     assert user_version == (99,)
-
-
-def test_concurrent_migrations_apply_once(database_path: Path) -> None:
-    barrier = threading.Barrier(4)
-    results: list[MigrationResult] = []
-    errors: list[BaseException] = []
-
-    def run_migration() -> None:
-        try:
-            with closing(connect(database_path)) as connection:
-                barrier.wait(timeout=10)
-                result = migrate(connection)
-            results.append(result)
-        except (
-            OSError,
-            RuntimeError,
-            sqlite3.Error,
-            MigrationError,
-        ) as error:
-            errors.append(error)
-
-    threads = [threading.Thread(target=run_migration) for _ in range(4)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=20)
-
-    assert all(not thread.is_alive() for thread in threads)
-    assert errors == []
-    assert len(results) == 4
-    assert sum(result.applied == (1,) for result in results) == 1
-
-    with closing(connect(database_path)) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (1,)
-
-
-def test_migrate_waits_for_write_lock(database_path: Path) -> None:
-    lock_connection = connect(database_path)
-    thread_started = threading.Event()
-    results: list[MigrationResult] = []
-    errors: list[BaseException] = []
-
-    def run_migration() -> None:
-        try:
-            with closing(connect(database_path)) as connection:
-                thread_started.set()
-                results.append(migrate(connection))
-        except (
-            OSError,
-            RuntimeError,
-            sqlite3.Error,
-            MigrationError,
-        ) as error:
-            errors.append(error)
-
-    try:
-        lock_connection.execute("BEGIN IMMEDIATE")
-        thread = threading.Thread(target=run_migration)
-        thread.start()
-        assert thread_started.wait(timeout=10)
-        time.sleep(0.1)
-        assert thread.is_alive()
-        lock_connection.execute("ROLLBACK")
-        thread.join(timeout=20)
-
-        assert not thread.is_alive()
-        assert errors == []
-        assert len(results) == 1
-        assert results[0].applied == (1,)
-    finally:
-        if lock_connection.in_transaction:
-            lock_connection.execute("ROLLBACK")
-        lock_connection.close()
-
-
-def test_migrate_lock_timeout_raises(database_path: Path) -> None:
-    with closing(connect(database_path)) as lock_connection:
-        lock_connection.execute("BEGIN IMMEDIATE")
-        try:
-            with closing(connect(database_path, timeout=0.1)) as connection:
-                with pytest.raises(sqlite3.OperationalError, match="locked"):
-                    migrate(connection)
-                assert connection.execute("PRAGMA user_version").fetchone() == (0,)
-        finally:
-            if lock_connection.in_transaction:
-                lock_connection.execute("ROLLBACK")
-
-
-def test_concurrent_processes_migrate_once(database_path: Path) -> None:
-    environment = os.environ.copy()
-    environment["DATABASE_PATH"] = str(database_path)
-    command = [sys.executable, "-m", "training_season.database"]
-    processes = [
-        subprocess.Popen(  # noqa: S603
-            command,
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        for _ in range(3)
-    ]
-
-    outputs: list[tuple[str, str]] = []
-    for process in processes:
-        stdout, stderr = process.communicate(timeout=30)
-        assert process.returncode == 0, f"stdout: {stdout}\nstderr: {stderr}"
-        outputs.append((stdout, stderr))
-
-    applied_logs = [
-        line
-        for _stdout, stderr in outputs
-        for line in stderr.splitlines()
-        if "applied [1]" in line
-    ]
-    assert len(applied_logs) == 1
-    assert all("schema version 1" in stderr for _stdout, stderr in outputs)
-
-    with closing(connect(database_path)) as connection:
-        tables = connection.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-        ).fetchall()
-        user_version = connection.execute("PRAGMA user_version").fetchone()
-
-    assert [row[0] for row in tables] == sorted(_TABLE_NAMES)
-    assert user_version == (1,)
