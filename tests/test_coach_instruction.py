@@ -542,11 +542,20 @@ def test_check_failure_exits_2(
     assert str(path) in capsys.readouterr().err
 
 
-def test_check_usage(capsys: pytest.CaptureFixture[str]) -> None:
-    assert coach_instruction.main([]) == 2
-    assert "Usage: training-season-instruction check" in capsys.readouterr().err
-    assert coach_instruction.main(["--help"]) == 0
-    assert "Usage: training-season-instruction check" in capsys.readouterr().err
+@pytest.mark.parametrize(
+    ("arguments", "code"),
+    [(["--help"], 0), (["-h"], 0), ([], 2), (["run"], 2), (["check", "x"], 2)],
+)
+def test_check_usage(
+    capsys: pytest.CaptureFixture[str],
+    arguments: list[str],
+    code: int,
+) -> None:
+    assert coach_instruction.main(arguments) == code
+
+    captured = capsys.readouterr()
+    assert captured.err == "Usage: training-season-instruction check\n"
+    assert captured.out == ""
 
 
 def test_replacing_file_changes_system_text(tmp_path: Path) -> None:

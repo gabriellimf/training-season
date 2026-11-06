@@ -63,6 +63,32 @@ def test_cli_prints_counts_and_returns_zero(
 
 
 @pytest.mark.parametrize(
+    ("arguments", "code"),
+    [(["--help"], 0), (["-h"], 0), (["bogus"], 2), (["--help", "x"], 2)],
+)
+def test_cli_usage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    arguments: list[str],
+    code: int,
+) -> None:
+    _configure_cli(monkeypatch, tmp_path)
+
+    def fail(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("usage must not start the pull")
+
+    monkeypatch.setattr(garmin_pull, "pull_garmin", fail)
+    monkeypatch.setattr(garmin_pull, "initialize_database", fail)
+
+    assert garmin_pull.main(arguments) == code
+
+    captured = capsys.readouterr()
+    assert captured.err == "Usage: training-season-pull [--help]\n"
+    assert captured.out == ""
+
+
+@pytest.mark.parametrize(
     ("error", "environment", "expected_code"),
     [
         (

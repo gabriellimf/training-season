@@ -18,6 +18,7 @@ from pathlib import Path
 from string import Template
 from typing import TYPE_CHECKING
 
+from training_season.cli_entry import run_cli
 from training_season.timeformat import training_date
 
 if TYPE_CHECKING:
@@ -245,26 +246,12 @@ def weeks_to_race(today: date, race_date: date) -> int:
     return max(0, (race_date - today).days // 7)
 
 
-def _print_usage() -> None:
-    sys.stderr.write("Usage: training-season-instruction check\n")
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    """Check the coaching instruction without making a network request."""
-    arguments = list(sys.argv[1:] if argv is None else argv)
-    if arguments in (["--help"], ["-h"]):
-        _print_usage()
-        return 0
-    if arguments != ["check"]:
-        _print_usage()
-        return 2
-
+def _print_instruction_summary(_arguments: tuple[str, ...]) -> int:
     try:
         instruction = load_coach_instruction()
     except CoachInstructionError as error:
         sys.stderr.write(f"{error}\n")
         return 2
-
     source = COACH_INSTRUCTION_PATH_ENV if instruction.from_environment else "default"
     placeholders = ",".join(sorted(instruction.placeholders)) or "none"
     sys.stdout.write(
@@ -272,6 +259,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"bytes={instruction.size_bytes} placeholders={placeholders}\n"
     )
     return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Check the coaching instruction without making a network request."""
+    return run_cli(
+        argv,
+        "training-season-instruction check",
+        {("check",)},
+        _print_instruction_summary,
+    )
 
 
 if __name__ == "__main__":

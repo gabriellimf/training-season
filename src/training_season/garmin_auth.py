@@ -14,6 +14,7 @@ import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -25,6 +26,7 @@ from garminconnect.exceptions import (
     GarminConnectTooManyRequestsError,
 )
 
+from training_season.cli_entry import run_cli
 from training_season.garmin_auth_base import (
     GARMIN_EMAIL_ENV,
     GARMIN_PASSWORD_ENV,
@@ -65,7 +67,7 @@ from training_season.garmin_token_cache import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
 
 __all__ = [
     "GARMIN_EMAIL_ENV",
@@ -284,56 +286,48 @@ def auth_status(config: GarminAuthConfig) -> GarminAuthStatus:
     return GarminAuthStatus(GarminAuthState.NO_TOKEN, None)
 
 
-def _print_usage() -> None:
-    sys.stderr.write(
-        "Usage: training-season-garmin {login|mfa|import-token|check|status}\n"
-    )
+_GARMIN_CLI_COMMANDS = frozenset(
+    {("login",), ("mfa",), ("import-token",), ("check",), ("status",)}
+)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Run the Garmin authentication command-line interface."""
-    arguments = list(sys.argv[1:] if argv is None else argv)
-    if arguments in (["--help"], ["-h"]):
-        _print_usage()
-        return 0
-    if len(arguments) != 1 or arguments[0] not in {
-        "login",
-        "mfa",
-        "import-token",
-        "check",
-        "status",
-    }:
-        _print_usage()
-        return 2
-
-    command = arguments[0]
+def _apply_stdin_text(read: Callable[[], str], apply: Callable[[str], None]) -> int:
     try:
-        config = garmin_auth_config_from_environment()
-        if command == "login":
-            start_login(config)
-        elif command == "mfa":
-            try:
-                code = sys.stdin.readline()
-            except OSError:
-                sys.stderr.write("Could not read command input from stdin\n")
-                return 1
-            submit_mfa_code(config, code)
-        elif command == "import-token":
-            try:
-                token_json = sys.stdin.read()
-            except OSError:
-                sys.stderr.write("Could not read command input from stdin\n")
-                return 1
-            import_token(config, token_json)
-        elif command == "check":
-            with garmin_session(config):
-                sys.stdout.write("Garmin session OK\n")
-        else:
-            status = auth_status(config)
-            if status.mfa_requested_at is None:
-                sys.stdout.write(f"{status.state.value}\n")
-            else:
-                sys.stdout.write(f"{status.state.value} {status.mfa_requested_at}\n")
+        text = read()
+    except OSError:
+        sys.stderr.write("Could not read command input from stdin\n")
+        return 1
+    apply(text)
+    return 0
+
+
+def _print_auth_status(config: GarminAuthConfig) -> None:
+    status = auth_status(config)
+    if status.mfa_requested_at is None:
+        sys.stdout.write(f"{status.state.value}\n")
+    else:
+        sys.stdout.write(f"{status.state.value} {status.mfa_requested_at}\n")
+
+
+def _run_garmin_command(command: str) -> int:
+    config = garmin_auth_config_from_environment()
+    if command == "login":
+        start_login(config)
+    elif command == "mfa":
+        return _apply_stdin_text(sys.stdin.readline, partial(submit_mfa_code, config))
+    elif command == "import-token":
+        return _apply_stdin_text(sys.stdin.read, partial(import_token, config))
+    elif command == "check":
+        with garmin_session(config):
+            sys.stdout.write("Garmin session OK\n")
+    else:
+        _print_auth_status(config)
+    return 0
+
+
+def _garmin_cli(arguments: tuple[str, ...]) -> int:
+    try:
+        return _run_garmin_command(arguments[0])
     except GarminMfaRequiredError as error:
         sys.stderr.write(f"{error}\n")
         return 3
@@ -343,7 +337,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     except GarminError as error:
         sys.stderr.write(f"{error}\n")
         return 1
-    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the Garmin authentication command-line interface."""
+    return run_cli(
+        argv,
+        "training-season-garmin {login|mfa|import-token|check|status}",
+        _GARMIN_CLI_COMMANDS,
+        _garmin_cli,
+    )
 
 
 if __name__ == "__main__":

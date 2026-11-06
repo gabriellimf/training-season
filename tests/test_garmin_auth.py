@@ -180,6 +180,24 @@ def test_cli_login_then_mfa_in_separate_invocations(
     assert fake_server.resumes == 1
 
 
+@pytest.mark.parametrize(
+    ("arguments", "code"),
+    [(["--help"], 0), (["-h"], 0), ([], 2), (["bogus"], 2), (["check", "x"], 2)],
+)
+def test_cli_usage(
+    capsys: pytest.CaptureFixture[str],
+    arguments: list[str],
+    code: int,
+) -> None:
+    assert garmin_auth.main(arguments) == code
+
+    captured = capsys.readouterr()
+    assert captured.err == (
+        "Usage: training-season-garmin {login|mfa|import-token|check|status}\n"
+    )
+    assert captured.out == ""
+
+
 @pytest.mark.parametrize("command", ["mfa", "import-token"])
 def test_cli_reports_stdin_read_error(
     command: str,
@@ -200,6 +218,61 @@ def test_cli_reports_stdin_read_error(
 
     assert garmin_auth.main([command]) == 1
     assert capsys.readouterr().err == "Could not read command input from stdin\n"
+
+
+def test_cli_status_prints_no_token_for_empty_token_dir(
+    auth_config: GarminAuthConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("GARMIN_TOKEN_DIR", str(auth_config.token_dir))
+    monkeypatch.delenv("GARMINTOKENS", raising=False)
+
+    assert garmin_auth.main(["status"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "no_token\n"
+    assert captured.err == ""
+
+
+def test_cli_check_prints_session_ok(
+    auth_config: GarminAuthConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class FakeGarminSession:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, *exc_info: object) -> None:
+            return None
+
+    def fake_garmin_session(config: GarminAuthConfig) -> FakeGarminSession:
+        assert config.token_dir == auth_config.token_dir
+        return FakeGarminSession()
+
+    monkeypatch.setenv("GARMIN_TOKEN_DIR", str(auth_config.token_dir))
+    monkeypatch.delenv("GARMINTOKENS", raising=False)
+    monkeypatch.setattr(garmin_auth, "garmin_session", fake_garmin_session)
+
+    assert garmin_auth.main(["check"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "Garmin session OK\n"
+    assert captured.err == ""
+
+
+def test_cli_status_without_token_dir_returns_2(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv("GARMIN_TOKEN_DIR", raising=False)
+    monkeypatch.delenv("GARMINTOKENS", raising=False)
+
+    assert garmin_auth.main(["status"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        "GARMIN_TOKEN_DIR must be an absolute path to the Garmin token directory\n"
+    )
 
 
 def test_errors_logs_and_cli_output_never_contain_secrets(

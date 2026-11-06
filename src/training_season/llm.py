@@ -20,6 +20,7 @@ from training_season.claude import (
     claude_config_from_environment,
     new_anthropic_client,
 )
+from training_season.cli_entry import run_cli
 from training_season.llm_base import (
     ChatTurn,
     LLMAdapter,
@@ -129,41 +130,34 @@ def new_llm_adapter(
     )
 
 
-def _print_usage() -> None:
-    sys.stderr.write("Usage: training-season-llm check\n")
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    """Check local LLM configuration without making an API call."""
-    arguments = list(sys.argv[1:] if argv is None else argv)
-    if arguments in (["--help"], ["-h"]):
-        _print_usage()
-        return 0
-    if arguments != ["check"]:
-        _print_usage()
-        return 2
-
+def _print_llm_models(_arguments: tuple[str, ...]) -> int:
     try:
         config = llm_config_from_environment()
     except LLMConfigurationError as error:
         sys.stderr.write(f"{error}\n")
         return 2
-
     for job in LLMJob:
-        if isinstance(config, ClaudeConfig):
-            job_config = config.for_job(job)
-            effort = "none" if job_config.effort is None else job_config.effort
-            line = (
-                f"{job} provider={LLMProvider.ANTHROPIC} "
-                f"model={job_config.model} effort={effort}"
-            )
-        else:
-            line = (
-                f"{job} provider={LLMProvider.OPENAI_COMPATIBLE} "
-                f"model={config.for_job(job).model}"
-            )
-        sys.stdout.write(f"{line}\n")
+        sys.stdout.write(f"{_llm_job_line(config, job)}\n")
     return 0
+
+
+def _llm_job_line(config: LLMConfig, job: LLMJob) -> str:
+    if isinstance(config, ClaudeConfig):
+        job_config = config.for_job(job)
+        effort = "none" if job_config.effort is None else job_config.effort
+        return (
+            f"{job} provider={LLMProvider.ANTHROPIC} "
+            f"model={job_config.model} effort={effort}"
+        )
+    return (
+        f"{job} provider={LLMProvider.OPENAI_COMPATIBLE} "
+        f"model={config.for_job(job).model}"
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Check local LLM configuration without making an API call."""
+    return run_cli(argv, "training-season-llm check", {("check",)}, _print_llm_models)
 
 
 if __name__ == "__main__":
