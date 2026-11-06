@@ -339,15 +339,17 @@ def initialize_database(
     path = database_path_from_environment(environ)
     with closing(connect(path)) as connection:
         _ensure_wal_mode(connection, retry_timeout=wal_retry_timeout)
-        result = migrate(connection)
-        applied: str | list[int] = list(result.applied) if result.applied else "none"
+        migration_outcome = migrate(connection)
+        applied: str | list[int] = (
+            list(migration_outcome.applied) if migration_outcome.applied else "none"
+        )
         _LOGGER.info(
             "database %s at schema version %d, applied %s",
             path,
-            result.current_version,
+            migration_outcome.current_version,
             applied,
         )
-        return result
+        return migration_outcome
 
 
 def main() -> int:

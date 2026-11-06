@@ -321,7 +321,7 @@ def _sorted_activity_rows(
             skipped += 1
         else:
             pending.append(row)
-    pending.sort(key=lambda item: item.start_time)
+    pending.sort(key=lambda pending_row: pending_row.start_time)
     return _ListedActivities(pending, skipped, invalid)
 
 

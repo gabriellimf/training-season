@@ -399,10 +399,12 @@ class OpenAICompatibleAdapter:
         client = self._client.get_or_create()
         started_at = time.monotonic()
         for attempt in range(_MAX_ATTEMPTS):
-            result = _attempt_chat_completion(client, job, job_config, body, started_at)
-            if isinstance(result, LLMReply):
-                return result
-            failure, retry_after = result
+            attempt_outcome = _attempt_chat_completion(
+                client, job, job_config, body, started_at
+            )
+            if isinstance(attempt_outcome, LLMReply):
+                return attempt_outcome
+            failure, retry_after = attempt_outcome
             delay = _retry_delay(failure, retry_after, attempt)
             if delay is None:
                 break
