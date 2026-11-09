@@ -51,6 +51,21 @@ def test_accepted_arguments_run_the_command(
     assert run.received == [("x",)]
 
 
+def test_predicate_decides_which_arguments_run(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run = RecordingRun()
+
+    def two_words(arguments: tuple[str, ...]) -> bool:
+        return len(arguments) == 2
+
+    assert run_cli(["a", "b"], "prog", two_words, run) == 7
+    assert run_cli(["a"], "prog", two_words, run) == 2
+
+    assert capsys.readouterr().err == "Usage: prog\n"
+    assert run.received == [("a", "b")]
+
+
 def test_no_argv_reads_sys_argv(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
