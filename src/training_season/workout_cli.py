@@ -5,10 +5,9 @@ from __future__ import annotations
 import os
 import sys
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING
 
-from training_season.cli_entry import run_cli
+from training_season.cli_entry import read_limited_text, run_cli
 from training_season.coach_instruction import (
     CoachInstructionError,
     load_coach_instruction,
@@ -47,7 +46,6 @@ _USAGE = (
     "name <YYYY-MM-DD> <content> [<YYYY-MM-DD> <content> ...]"
 )
 _COMMANDS = frozenset({"validate", "request"})
-_MAX_FILE_BYTES = 1_048_576
 
 
 def _is_known_command(arguments: tuple[str, ...]) -> bool:
@@ -56,24 +54,8 @@ def _is_known_command(arguments: tuple[str, ...]) -> bool:
     return len(arguments) == 2 and arguments[0] in _COMMANDS
 
 
-def _read_text(path: str) -> str | None:
-    try:
-        size = Path(path).stat().st_size
-        if size > _MAX_FILE_BYTES:
-            sys.stderr.write(
-                f"file {path} is {size} bytes, above the limit of "
-                f"{_MAX_FILE_BYTES} bytes\n"
-            )
-            return None
-        with Path(path).open("rb") as handle:
-            return handle.read(_MAX_FILE_BYTES).decode("utf-8")
-    except (OSError, UnicodeDecodeError) as error:
-        sys.stderr.write(f"cannot read file {path}: {error}\n")
-        return None
-
-
 def _validate_file(path: str) -> int:
-    text = _read_text(path)
+    text = read_limited_text(path)
     if text is None:
         return 2
     try:
@@ -129,7 +111,7 @@ def _request_file(
     environ: Mapping[str, str],
     transport: httpx2.BaseTransport | None,
 ) -> int:
-    prompt = _read_text(path)
+    prompt = read_limited_text(path)
     if prompt is None:
         return 2
     if not prompt.strip():

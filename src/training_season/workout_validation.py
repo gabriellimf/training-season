@@ -12,6 +12,7 @@ from training_season.workout_schema import Workout
 _FENCED_JSON = re.compile(r"\A```json[ \t]*\n(.*)\n```\Z", re.DOTALL)
 _MAX_LINE_LENGTH = 200
 _MAX_LINES = 20
+_DROPPED_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
 
 
 class WorkoutValidationError(ValueError):
@@ -43,16 +44,16 @@ class WorkoutValidationError(ValueError):
 
 def bounded_line(line: str) -> str:
     """
-    Drop control and format characters and cut the line to 200 characters.
+    Drop control, format, line and paragraph separator characters.
 
-    A cut line ends with `…`.
+    Cuts the line to 200 characters. A cut line ends with `…`.
 
     Used as `bounded_line(f"bad value{chr(10)}")`, giving `bad value`
     """
     clean = "".join(
         character
         for character in line
-        if unicodedata.category(character) not in {"Cc", "Cf"}
+        if unicodedata.category(character) not in _DROPPED_CATEGORIES
     )
     if len(clean) <= _MAX_LINE_LENGTH:
         return clean

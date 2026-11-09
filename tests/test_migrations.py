@@ -172,9 +172,10 @@ def test_migrate_fresh_database_creates_all_tables(database_path: Path) -> None:
         "activity_activity_date",
         "checkin_week_start",
         "macro_plan_single_active",
+        "workout_schedule_date",
     ]
     assert user_version == (migration_result.current_version,)
-    assert migration_result.applied == (1,)
+    assert migration_result.applied == (1, 2)
 
 
 def test_migrate_twice_changes_nothing(database_path: Path) -> None:
@@ -192,7 +193,7 @@ def test_migrate_twice_changes_nothing(database_path: Path) -> None:
 
     second_hash = _database_sha256(database_path)
 
-    assert first_result.applied == (1,)
+    assert first_result.applied == (1, 2)
     assert second_result.applied == ()
     assert second_version == first_version
     assert second_schema == first_schema

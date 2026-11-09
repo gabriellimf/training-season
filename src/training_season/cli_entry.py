@@ -3,12 +3,35 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Sequence
 
 _HELP_ARGUMENTS = (("--help",), ("-h",))
+MAX_INPUT_FILE_BYTES = 1_048_576
+
+
+def read_limited_text(path: str) -> str | None:
+    """
+    Read a UTF-8 input file of at most 1 MiB, or print why not and return None.
+
+    Used as `text = read_limited_text("week.json")`
+    """
+    try:
+        size = Path(path).stat().st_size
+        if size > MAX_INPUT_FILE_BYTES:
+            sys.stderr.write(
+                f"file {path} is {size} bytes, above the limit of "
+                f"{MAX_INPUT_FILE_BYTES} bytes\n"
+            )
+            return None
+        with Path(path).open("rb") as handle:
+            return handle.read(MAX_INPUT_FILE_BYTES).decode("utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        sys.stderr.write(f"cannot read file {path}: {error}\n")
+        return None
 
 
 def run_cli(
