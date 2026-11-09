@@ -123,6 +123,21 @@ def has_rejected_token_status(error: BaseException) -> bool:
     return any(_is_rejected_token_response(cause) for cause in _exception_chain(error))
 
 
+def garmin_response_status(error: BaseException) -> int | None:
+    """
+    Return the HTTP status of the first Garmin connection error in the chain.
+
+    Used as `garmin_response_status(caught_error) == 429`
+    """
+    for cause in _exception_chain(error):
+        if not isinstance(cause, GarminConnectConnectionError):
+            continue
+        status = getattr(getattr(cause, "response", None), "status_code", None)
+        if isinstance(status, int):
+            return status
+    return None
+
+
 def _has_invalid_mfa_state_cause(error: BaseException) -> bool:
     return isinstance(
         error.__cause__,

@@ -8,6 +8,7 @@ import pytest
 from training_season.workout_cli import main
 from training_season.workout_validation import (
     WorkoutValidationError,
+    bounded_line,
     workout_from_text,
 )
 from workout_fixtures import (
@@ -19,6 +20,12 @@ from workout_fixtures import (
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+def test_bounded_line_drops_line_and_paragraph_separators() -> None:
+    line = f"06/01{chr(0x2028)}fake{chr(0x2029)}line{chr(0x1B)}"
+
+    assert bounded_line(line) == "06/01fakeline"
 
 
 def test_plain_json_text_is_accepted() -> None:

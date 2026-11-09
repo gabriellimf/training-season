@@ -51,6 +51,7 @@ from training_season.garmin_auth_base import (
 from training_season.garmin_login import (
     GARMIN_REQUEST_ERRORS,
     credential_login_session,
+    garmin_response_status,
     has_rejected_token_status,
     login_from_cache,
     resume_mfa_login,
@@ -108,6 +109,7 @@ LOCK_TIMEOUT_SECONDS = 10.0
 _LEGACY_TOKEN_ENV = "GARMINTOKENS"  # noqa: S105
 _LOGGER = logging.getLogger(__name__)
 _SESSION_REJECTED_ERROR = "Garmin rejected the authenticated session; log in again"
+_TOO_MANY_REQUESTS_STATUS = 429
 
 
 class GarminAuthState(StrEnum):
@@ -170,10 +172,20 @@ def _optional_credential(environment: Mapping[str, str], name: str) -> str | Non
     return value
 
 
-def _session_request_error(error: Exception) -> GarminError:
+def garmin_request_error(error: Exception) -> GarminError:
+    """
+    Map a library error of an authenticated request to a fixed-message error.
+
+    The message never carries the Garmin response body.
+
+    Used as `raise garmin_request_error(caught_error) from caught_error`
+    """
     if isinstance(error, GarminConnectAuthenticationError):
         return GarminTokenExpiredError(_SESSION_REJECTED_ERROR)
-    if isinstance(error, GarminConnectTooManyRequestsError):
+    if (
+        isinstance(error, GarminConnectTooManyRequestsError)
+        or garmin_response_status(error) == _TOO_MANY_REQUESTS_STATUS
+    ):
         return GarminRateLimitedError(
             "Garmin rate-limited the authenticated request. Try again later."
         )
@@ -214,7 +226,7 @@ def garmin_session(
         try:
             yield session
         except GARMIN_REQUEST_ERRORS as error:
-            raise _session_request_error(error) from error
+            raise garmin_request_error(error) from error
 
 
 def start_login(
