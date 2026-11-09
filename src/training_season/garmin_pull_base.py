@@ -31,17 +31,6 @@ class GarminPullContext:
     history_start: str | None
 
 
-def parse_iso_date(value: object) -> date | None:
-    """Read a strict YYYY-MM-DD string, or None for any other value."""
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed = date.fromisoformat(value)
-    except ValueError:
-        return None
-    return parsed if parsed.isoformat() == value else None
-
-
 def non_negative(value: object) -> float | None:
     """Read a finite number of zero or more, or None for any other value."""
     if isinstance(value, bool) or not isinstance(value, int | float):

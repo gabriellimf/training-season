@@ -25,6 +25,7 @@ from training_season.timeformat import (
     TrainingTimezoneError,
     training_zone_from_environment,
 )
+from training_season.workout_name_cli import run_name_command
 from training_season.workout_request import (
     WorkoutAccepted,
     WorkoutRejected,
@@ -41,12 +42,17 @@ if TYPE_CHECKING:
 
     import httpx2
 
-_USAGE = "training-season-workout validate <path> | request <prompt-path>"
+_USAGE = (
+    "training-season-workout validate <path> | request <prompt-path> | "
+    "name <YYYY-MM-DD> <content> [<YYYY-MM-DD> <content> ...]"
+)
 _COMMANDS = frozenset({"validate", "request"})
 _MAX_FILE_BYTES = 1_048_576
 
 
 def _is_known_command(arguments: tuple[str, ...]) -> bool:
+    if arguments[:1] == ("name",):
+        return True
     return len(arguments) == 2 and arguments[0] in _COMMANDS
 
 
@@ -153,7 +159,7 @@ def main(
     transport: httpx2.BaseTransport | None = None,
 ) -> int:
     """
-    Validate a workout file, or request a workout from the configured model.
+    Validate a workout file, request a workout, or build workout names.
 
     Used as `main(["validate", "data/workouts/valid.json"])`
     """
@@ -162,6 +168,8 @@ def main(
     def run(arguments: tuple[str, ...]) -> int:
         if arguments[0] == "validate":
             return _validate_file(arguments[1])
+        if arguments[0] == "name":
+            return run_name_command(arguments[1:])
         return _request_file(arguments[1], environment, transport)
 
     return run_cli(argv, _USAGE, _is_known_command, run)

@@ -33,7 +33,7 @@ class WorkoutValidationError(ValueError):
         """
         items = error.errors()
         lines = [
-            _bounded_line(f"{_json_path(item['loc'])}: {item['msg']}")
+            bounded_line(f"{_json_path(item['loc'])}: {item['msg']}")
             for item in items[:_MAX_LINES]
         ]
         if len(items) > _MAX_LINES:
@@ -41,7 +41,14 @@ class WorkoutValidationError(ValueError):
         return cls(tuple(lines))
 
 
-def _bounded_line(line: str) -> str:
+def bounded_line(line: str) -> str:
+    """
+    Drop control and format characters and cut the line to 200 characters.
+
+    A cut line ends with `…`.
+
+    Used as `bounded_line(f"bad value{chr(10)}")`, giving `bad value`
+    """
     clean = "".join(
         character
         for character in line

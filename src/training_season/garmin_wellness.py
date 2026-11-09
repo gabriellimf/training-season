@@ -13,10 +13,9 @@ from training_season.garmin_pull_base import (
     has_garmin_value,
     non_negative,
     none_if_not_found,
-    parse_iso_date,
     resume_start_date,
 )
-from training_season.timeformat import utc_now
+from training_season.timeformat import parse_iso_date, utc_now
 
 if TYPE_CHECKING:
     import sqlite3

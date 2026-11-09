@@ -2,7 +2,7 @@
 
 import os
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 UTC_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
@@ -42,6 +42,17 @@ def utc_timestamp(moment: datetime) -> str:
 def utc_now() -> str:
     """Return the current UTC timestamp with second precision."""
     return utc_timestamp(datetime.now(UTC))
+
+
+def parse_iso_date(value: object) -> date | None:
+    """Read a strict YYYY-MM-DD string, or None for any other value."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.isoformat() == value else None
 
 
 def training_date(moment: datetime, zone: ZoneInfo) -> str:
