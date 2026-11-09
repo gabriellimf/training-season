@@ -14,11 +14,13 @@ _HELP_ARGUMENTS = (("--help",), ("-h",))
 def run_cli(
     argv: Sequence[str] | None,
     usage: str,
-    accepted: Collection[tuple[str, ...]],
+    accepted: Collection[tuple[str, ...]] | Callable[[tuple[str, ...]], bool],
     run: Callable[[tuple[str, ...]], int],
 ) -> int:
     """
     Print the usage line for help or a bad argument list, else run the command.
+
+    `accepted` is a collection of exact argument tuples or a predicate.
 
     Used as
     `run_cli(argv, "training-season-llm check", {("check",)}, _print_llm_models)`
@@ -27,7 +29,8 @@ def run_cli(
     if arguments in _HELP_ARGUMENTS:
         sys.stderr.write(f"Usage: {usage}\n")
         return 0
-    if arguments not in accepted:
+    is_accepted = accepted(arguments) if callable(accepted) else arguments in accepted
+    if not is_accepted:
         sys.stderr.write(f"Usage: {usage}\n")
         return 2
     return run(arguments)
