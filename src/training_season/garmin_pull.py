@@ -38,10 +38,11 @@ from training_season.garmin_auth import (
     garmin_auth_config_from_environment,
     garmin_session,
 )
-from training_season.garmin_pull_base import GarminPullContext, parse_iso_date
+from training_season.garmin_pull_base import GarminPullContext
 from training_season.garmin_wellness import pull_wellness
 from training_season.timeformat import (
     TrainingTimezoneError,
+    parse_iso_date,
     training_date,
     training_zone_from_environment,
 )
