@@ -7,7 +7,7 @@ import sys
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from training_season.cli_entry import read_limited_text, run_cli
+from training_season.cli_entry import read_limited_text, report_failure, run_cli
 from training_season.coach_instruction import (
     CoachInstructionError,
     load_coach_instruction,
@@ -124,14 +124,9 @@ def _request_file(
         CoachInstructionError,
         TrainingTimezoneError,
     ) as error:
-        return _report_failure(error, 2)
+        return report_failure(error, 2)
     except LLMError as error:
-        return _report_failure(error, 1)
-
-
-def _report_failure(error: Exception, exit_code: int) -> int:
-    sys.stderr.write(f"{error}\n")
-    return exit_code
+        return report_failure(error, 1)
 
 
 def main(
