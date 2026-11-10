@@ -1,6 +1,5 @@
 """Pydantic envelope for one running workout returned by the coach model."""
 
-import unicodedata
 from typing import Annotated, Literal, Self
 
 from pydantic import (
@@ -13,6 +12,11 @@ from pydantic import (
     model_validator,
 )
 
+from training_season.bounded_text import (
+    reject_control_characters,
+    reject_control_characters_but_newline,
+)
+
 MAX_WORKOUT_STEPS = 50
 MAX_REPEAT_COUNT = 99
 MAX_WORKOUT_NAME_LENGTH = 15
@@ -20,20 +24,6 @@ MAX_NOTES_LENGTH = 500
 MAX_DESCRIPTION_LENGTH = 2000
 
 _SHAPE_ONLY = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
-
-
-def _reject_control_characters(text: str) -> str:
-    for character in text:
-        if unicodedata.category(character).startswith("C"):
-            raise ValueError(
-                f"control or format character U+{ord(character):04X} is not allowed"
-            )
-    return text
-
-
-def _reject_control_characters_but_newline(text: str) -> str:
-    _reject_control_characters(text.replace("\n", ""))
-    return text
 
 
 class StepDuration(BaseModel):
@@ -99,7 +89,7 @@ class _TimedStep(BaseModel):
         Annotated[
             str,
             Field(max_length=MAX_NOTES_LENGTH),
-            AfterValidator(_reject_control_characters_but_newline),
+            AfterValidator(reject_control_characters_but_newline),
         ]
         | None
     ) = None
@@ -166,13 +156,13 @@ class Workout(BaseModel):
         StringConstraints(
             strip_whitespace=True, min_length=1, max_length=MAX_WORKOUT_NAME_LENGTH
         ),
-        AfterValidator(_reject_control_characters),
+        AfterValidator(reject_control_characters),
     ]
     description: (
         Annotated[
             str,
             Field(max_length=MAX_DESCRIPTION_LENGTH),
-            AfterValidator(_reject_control_characters_but_newline),
+            AfterValidator(reject_control_characters_but_newline),
         ]
         | None
     ) = None

@@ -172,10 +172,12 @@ def test_migrate_fresh_database_creates_all_tables(database_path: Path) -> None:
         "activity_activity_date",
         "checkin_week_start",
         "macro_plan_single_active",
+        "message_onboarding_session",
+        "onboarding_session_single_open",
         "workout_schedule_date",
     ]
     assert user_version == (migration_result.current_version,)
-    assert migration_result.applied == (1, 2)
+    assert migration_result.applied == (1, 2, 3)
 
 
 def test_migrate_twice_changes_nothing(database_path: Path) -> None:
@@ -193,7 +195,7 @@ def test_migrate_twice_changes_nothing(database_path: Path) -> None:
 
     second_hash = _database_sha256(database_path)
 
-    assert first_result.applied == (1, 2)
+    assert first_result.applied == (1, 2, 3)
     assert second_result.applied == ()
     assert second_version == first_version
     assert second_schema == first_schema
@@ -210,6 +212,29 @@ def test_migrate_twice_keeps_rows(database_path: Path) -> None:
 
     assert second_result.applied == ()
     assert rows_after == rows_before
+
+
+def test_onboarding_session_migration_keeps_existing_messages(
+    database_path: Path,
+) -> None:
+    with closing(connect(database_path)) as connection:
+        migrate(connection, load_migrations()[:2])
+        _insert_sample_rows(connection)
+        migration_result = migrate(connection)
+        messages = connection.execute(
+            "SELECT role, content, onboarding_session_id FROM message"
+        ).fetchall()
+        dangling = connection.execute("PRAGMA foreign_key_check").fetchall()
+        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+            connection.execute(
+                "INSERT INTO message (role, content, onboarding_session_id, "
+                "created_at) VALUES ('user', 'x', 99, ?)",
+                (_CREATED_AT,),
+            )
+
+    assert migration_result.applied == (3,)
+    assert messages == [("assistant", "test plan", None)]
+    assert dangling == []
 
 
 def test_migrate_failure_rolls_back_whole_run(database_path: Path) -> None:
@@ -323,6 +348,23 @@ def test_migrate_failure_keeps_previous_version(database_path: Path) -> None:
     assert user_version == (1,)
 
 
+def test_migrate_allows_add_column_on_a_strict_table(database_path: Path) -> None:
+    migration = Migration(
+        1,
+        "0001_add_column.sql",
+        "CREATE TABLE note (id INTEGER PRIMARY KEY) STRICT;\n"
+        "CREATE TABLE tag (id INTEGER PRIMARY KEY) STRICT;\n"
+        "ALTER TABLE note ADD COLUMN tag_id INTEGER REFERENCES tag (id);",
+    )
+
+    with closing(connect(database_path)) as connection:
+        migration_result = migrate(connection, (migration,))
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(note)")]
+
+    assert migration_result.applied == (1,)
+    assert columns == ["id", "tag_id"]
+
+
 @pytest.mark.parametrize(
     "control_statement",
     [
@@ -331,6 +373,7 @@ def test_migrate_failure_keeps_previous_version(database_path: Path) -> None:
         "ROLLBACK;",
         "SAVEPOINT s;",
         "PRAGMA foreign_keys = OFF;",
+        "PRAGMA user_version = 7;",
     ],
 )
 def test_migrate_rejects_transaction_control(

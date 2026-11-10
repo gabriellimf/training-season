@@ -37,6 +37,30 @@ def test_empty_week_is_valid() -> None:
     assert push_week_from_text(week_text([])).ordered_entries() == ()
 
 
+def test_short_week_keeps_its_last_day() -> None:
+    week = push_week_from_text(week_text(["2027-01-05"], week_end="2027-01-05"))
+
+    assert week.week_end == date(2027, 1, 5)
+
+
+@pytest.mark.parametrize(
+    ("week_end", "days", "expected"),
+    [
+        ("2027-01-03", [], "week_end 2027-01-03 is outside 2027-01-04..2027-01-10"),
+        ("2027-01-11", [], "week_end 2027-01-11 is outside 2027-01-04..2027-01-10"),
+        ("2027-01-07", ["2027-01-08"], "outside the week 2027-01-04..2027-01-07"),
+        ("2027-1-7", [], "expected a YYYY-MM-DD date"),
+    ],
+)
+def test_invalid_week_end_names_the_offending_value(
+    week_end: str, days: list[str], expected: str
+) -> None:
+    with pytest.raises(PushWeekError) as raised:
+        push_week_from_text(week_text(days, week_end=week_end))
+
+    assert expected in str(raised.value)
+
+
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
@@ -49,6 +73,8 @@ def test_empty_week_is_valid() -> None:
         (_week_with([_entry("2027-01-05", "05/01 Fácil")]), "expected '05/01 Facil'"),
         (_week_with([], extra="x"), "extra: Extra inputs are not permitted"),
         ("not json", "Invalid JSON"),
+        ("{}", "week_start: Field required"),
+        ('{"workouts": []}', "week_start: Field required"),
     ],
 )
 def test_invalid_week_names_the_offending_value(text: str, expected: str) -> None:

@@ -204,13 +204,19 @@ def load_migrations(directory: Traversable | None = None) -> tuple[Migration, ..
     return tuple(migrations)
 
 
+_READ_ONLY_PRAGMAS = frozenset({"quick_check"})
+
+
 def _migration_authorizer(
     action: int,
-    _argument_one: str | None,
+    argument_one: str | None,
     _argument_two: str | None,
     _database_name: str | None,
     _trigger_name: str | None,
 ) -> int:
+    # SQLite runs an internal `PRAGMA quick_check` for ALTER TABLE ADD COLUMN.
+    if action == sqlite3.SQLITE_PRAGMA and argument_one in _READ_ONLY_PRAGMAS:
+        return sqlite3.SQLITE_OK
     denied_actions = {
         sqlite3.SQLITE_TRANSACTION,
         sqlite3.SQLITE_SAVEPOINT,

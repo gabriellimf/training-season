@@ -50,13 +50,14 @@ def test_concurrent_migrations_apply_once(database_path: Path) -> None:
     assert len(migration_results) == 4
     assert (
         sum(
-            migration_result.applied == (1, 2) for migration_result in migration_results
+            migration_result.applied == (1, 2, 3)
+            for migration_result in migration_results
         )
         == 1
     )
 
     with closing(connect(database_path)) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (2,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (3,)
 
 
 def test_migrate_waits_for_write_lock(database_path: Path) -> None:
@@ -91,7 +92,7 @@ def test_migrate_waits_for_write_lock(database_path: Path) -> None:
         assert not thread.is_alive()
         assert errors == []
         assert len(migration_results) == 1
-        assert migration_results[0].applied == (1, 2)
+        assert migration_results[0].applied == (1, 2, 3)
     finally:
         if lock_connection.in_transaction:
             lock_connection.execute("ROLLBACK")
@@ -136,10 +137,10 @@ def test_concurrent_processes_migrate_once(database_path: Path) -> None:
         line
         for _stdout, stderr in outputs
         for line in stderr.splitlines()
-        if "applied [1, 2]" in line
+        if "applied [1, 2, 3]" in line
     ]
     assert len(applied_logs) == 1
-    assert all("schema version 2" in stderr for _stdout, stderr in outputs)
+    assert all("schema version 3" in stderr for _stdout, stderr in outputs)
 
     with closing(connect(database_path)) as connection:
         tables = connection.execute(
@@ -149,4 +150,4 @@ def test_concurrent_processes_migrate_once(database_path: Path) -> None:
         user_version = connection.execute("PRAGMA user_version").fetchone()
 
     assert [row[0] for row in tables] == sorted(_TABLE_NAMES)
-    assert user_version == (2,)
+    assert user_version == (3,)

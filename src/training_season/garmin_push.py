@@ -182,7 +182,7 @@ def push_week(
     week: PushWeek,
 ) -> PushResult:
     """
-    Remove this app's stored workouts on the 7 days, then push the new ones.
+    Remove this app's stored workouts on week_start..week_end, then push.
 
     Stops at the first failed Garmin call. Each Garmin change commits its row
     change at once, so the database always matches what Garmin holds.

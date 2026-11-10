@@ -40,9 +40,12 @@ def dated_workout(day: str, content: str = "Leve") -> dict[str, object]:
     }
 
 
-def week_text(days: list[str], week_start: str = WEEK_START) -> str:
+def week_text(
+    days: list[str], week_start: str = WEEK_START, week_end: str | None = None
+) -> str:
     workouts = [{"date": day, "workout": dated_workout(day)} for day in days]
-    return json.dumps({"week_start": week_start, "workouts": workouts})
+    end = {} if week_end is None else {"week_end": week_end}
+    return json.dumps({"week_start": week_start, **end, "workouts": workouts})
 
 
 @dataclass

@@ -64,7 +64,12 @@ def _json_path(location: tuple[int | str, ...]) -> str:
     return ".".join(str(part) for part in location) or "$"
 
 
-def _json_body(text: str) -> str:
+def json_body(text: str) -> str:
+    """
+    Strip whitespace and one ```json fence around a model reply.
+
+    Used as `json_body(reply.text)`: a fenced `{}` gives `{}`
+    """
     stripped = text.strip()
     fenced = _FENCED_JSON.match(stripped)
     return fenced.group(1) if fenced else stripped
@@ -77,6 +82,6 @@ def workout_from_text(text: str) -> Workout:
     Used as `workout_from_text('{"name": "10x400", "steps": [...]}')`
     """
     try:
-        return Workout.model_validate_json(_json_body(text))
+        return Workout.model_validate_json(json_body(text))
     except ValidationError as error:
         raise WorkoutValidationError.from_pydantic(error) from error
