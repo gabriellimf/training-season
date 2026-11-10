@@ -241,7 +241,7 @@ def test_initialize_database_creates_file_and_enables_wal(
     result = initialize_database({"DATABASE_PATH": str(database_path)})
 
     assert database_path.is_file()
-    assert result.current_version == 2
+    assert result.current_version == 3
     with closing(connect(database_path)) as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
 
@@ -269,7 +269,7 @@ def test_initialize_database_statement_order_and_log(
         "BEGIN IMMEDIATE",
         "PRAGMA user_version",
     ]
-    assert fresh[-2:] == ["PRAGMA user_version = 2", "COMMIT"]
+    assert fresh[-2:] == ["PRAGMA user_version = 3", "COMMIT"]
     assert fresh.count("BEGIN IMMEDIATE") == 1
     assert fresh.count("COMMIT") == 1
     assert "ROLLBACK" not in fresh
@@ -289,12 +289,12 @@ def test_initialize_database_statement_order_and_log(
         (
             "training_season.database",
             logging.INFO,
-            f"database {database_path} at schema version 2, applied [1, 2]",
+            f"database {database_path} at schema version 3, applied [1, 2, 3]",
         ),
         (
             "training_season.database",
             logging.INFO,
-            f"database {database_path} at schema version 2, applied none",
+            f"database {database_path} at schema version 3, applied none",
         ),
     ]
 
@@ -430,7 +430,7 @@ def test_main_returns_1_for_migration_error(
     assert len(error_records) == 1
     assert error_records[0].getMessage() == (
         "database initialization failed: database schema version 99 is newer than "
-        "this code, latest 2"
+        "this code, latest 3"
     )
     assert error_records[0].exc_info is None
     assert "Traceback" not in caplog.text

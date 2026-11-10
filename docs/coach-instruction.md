@@ -4,9 +4,11 @@ The coach instruction is a file, not code. Replace the file to change the coach
 language, tone, and training approach. The bundled example is
 `src/training_season/instructions/coach.pt-BR.md`.
 
-The rendered file is passed as the complete `system=` value. Code does not prepend
-or append text to it. Code-owned output contracts, workout names, and device limits
-belong in a user turn.
+The rendered file is the start of the `system=` value. Code does not prepend text to
+it. Each request appends its code-owned output contract after the rendered file: the
+workout, week, macro plan, onboarding and athlete summary contracts, with the
+workout name rule and the device limits. The coach context and the request itself go
+in a user turn.
 
 ## Path
 

@@ -211,6 +211,35 @@ def test_push_removes_our_rows_on_its_days_from_another_week_start(
     ]
 
 
+def test_short_week_keeps_our_workouts_after_its_last_day(
+    connection: sqlite3.Connection,
+    auth_config: GarminAuthConfig,
+    fake_server: FakeGarminServer,
+) -> None:
+    calendar = FakeGarminCalendar()
+    next_week = week_text(["2027-01-11"], week_start="2027-01-11")
+    run_push(connection, auth_config, fake_server, calendar, next_week)
+
+    _, client = run_push(
+        connection,
+        auth_config,
+        fake_server,
+        calendar,
+        week_text(["2027-01-08"], week_start="2027-01-06", week_end="2027-01-10"),
+    )
+
+    assert "delete_workout" not in client.calls
+    assert workout_rows(connection) == [
+        ("2027-01-06", "2027-01-08", "08/01 Leve", "1003", "1004"),
+        ("2027-01-11", "2027-01-11", "11/01 Leve", "1001", "1002"),
+    ]
+    stored = connection.execute(
+        "SELECT week_end, raw_json FROM weekly_plan WHERE week_start = '2027-01-06'"
+    ).fetchone()
+    assert stored[0] == "2027-01-10"
+    assert '"week_end":"2027-01-10"' in stored[1]
+
+
 def test_removal_failure_sends_no_new_workout(
     connection: sqlite3.Connection,
     auth_config: GarminAuthConfig,
