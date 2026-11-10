@@ -34,6 +34,16 @@ def read_limited_text(path: str) -> str | None:
         return None
 
 
+def report_failure(error: Exception, exit_code: int) -> int:
+    """
+    Write the error message on stderr and return the exit code for it.
+
+    Used as `return report_failure(error, 2)`
+    """
+    sys.stderr.write(f"{error}\n")
+    return exit_code
+
+
 def run_cli(
     argv: Sequence[str] | None,
     usage: str,
