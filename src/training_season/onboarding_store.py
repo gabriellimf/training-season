@@ -1,4 +1,4 @@
-"""Onboarding sessions and their chat turns in the `message` table."""
+"""Chat turns in the `message` table: onboarding sessions and weekly cycle runs."""
 
 from __future__ import annotations
 
@@ -16,6 +16,11 @@ SessionRole = Literal["user", "assistant"]
 _INSERT_MESSAGE = """
 INSERT INTO message (role, content, onboarding_session_id, created_at)
 VALUES (?, ?, ?, ?)
+"""
+_INSERT_CYCLE_MESSAGE = """
+INSERT INTO message (role, content, weekly_plan_id, created_at)
+VALUES ('assistant', ?, ?, ?)
+RETURNING id
 """
 _COMPLETE_SESSION = """
 UPDATE onboarding_session
@@ -127,6 +132,21 @@ def append_exchange(
         insert_exchange(
             connection, session_id, SessionExchange(user_text, assistant_text)
         )
+
+
+def insert_cycle_message(
+    connection: sqlite3.Connection, content: str, weekly_plan_id: int | None
+) -> int:
+    """
+    Store the coach message of one weekly cycle run and return its id.
+
+    Used as `insert_cycle_message(connection, "Treinos da semana...", 7)`
+    """
+    with transaction(connection):
+        row = connection.execute(
+            _INSERT_CYCLE_MESSAGE, (content, weekly_plan_id, utc_now())
+        ).fetchone()
+    return int(row[0])
 
 
 def session_messages(

@@ -25,6 +25,7 @@ training-season-push = "training_season.garmin_push_cli:main"
 training-season-workout = "training_season.workout_cli:main"
 training-season-context = "training_season.coach_context_cli:main"
 training-season-onboarding = "training_season.onboarding_cli:main"
+training-season-weekly = "training_season.weekly_cycle_cli:main"
 
 [build-system]
 requires = ["hatchling==1.32.4"]

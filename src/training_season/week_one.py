@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
+from training_season.coach_context import assemble_coach_context
 from training_season.garmin_auth import default_garmin_factory
 from training_season.garmin_push import push_garmin_week
 from training_season.push_store import active_macro_plan_id
@@ -51,9 +52,9 @@ def push_week_one(
     active_macro_plan_id(connection)
     first_day, last_day = week_one_range(today)
     outcome = generate_week(
-        connection,
         adapter,
         instruction_text=instruction_text,
+        context_text=assemble_coach_context(connection, first_day).text,
         first_day=first_day,
         last_day=last_day,
     )

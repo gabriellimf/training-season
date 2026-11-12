@@ -23,6 +23,12 @@ WHERE activity_date BETWEEN ? AND ?
 ORDER BY activity_date, start_time, garmin_activity_id
 """
 
+_RUNNING_METRES_BETWEEN = """
+SELECT COALESCE(SUM(distance_m), 0)
+FROM activity
+WHERE activity_date BETWEEN ? AND ? AND sport = 'running'
+"""
+
 _WELLNESS_BETWEEN = """
 SELECT wellness_date, resting_hr, sleep_seconds, body_battery_high,
        body_battery_low, stress_avg, hrv_last_night_ms, vo2max
@@ -189,6 +195,20 @@ def read_activities_between(
         _ACTIVITIES_BETWEEN, (first.isoformat(), last.isoformat())
     ).fetchall()
     return tuple(ContextActivityRow(*row) for row in rows)
+
+
+def read_running_metres_between(
+    connection: sqlite3.Connection, first: date, last: date
+) -> float:
+    """
+    Return the run distance of the training dates first..last; no run gives 0.
+
+    Used as `read_running_metres_between(connection, last_monday, last_sunday)`
+    """
+    row = connection.execute(
+        _RUNNING_METRES_BETWEEN, (first.isoformat(), last.isoformat())
+    ).fetchone()
+    return float(row[0])
 
 
 def read_wellness_between(

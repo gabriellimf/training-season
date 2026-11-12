@@ -40,9 +40,9 @@ def run_generation(
 ) -> tuple[object, QueuedReplyAdapter]:
     adapter = QueuedReplyAdapter(replies)
     outcome = generate_week(
-        connection,
         adapter,
         instruction_text="Instrução",
+        context_text=assemble_coach_context(connection, _WEDNESDAY).text,
         first_day=_WEDNESDAY,
         last_day=_SUNDAY,
     )

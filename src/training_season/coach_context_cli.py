@@ -13,14 +13,12 @@ from typing import TYPE_CHECKING
 
 from training_season.athlete_summary import (
     AthleteSummaryRejectedError,
-    athlete_summary_system_text,
+    athlete_summary_system,
     update_athlete_summary,
 )
 from training_season.cli_entry import report_failure, run_cli
 from training_season.coach_context import assemble_coach_context
-from training_season.coach_context_store import read_active_macro
 from training_season.coach_instruction import (
-    CoachInstruction,
     CoachInstructionError,
     load_coach_instruction,
 )
@@ -45,7 +43,6 @@ from training_season.timeformat import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
-    from zoneinfo import ZoneInfo
 
     import httpx2
 
@@ -96,19 +93,6 @@ def _show_context(week_start_text: str, inputs: _CommandInputs) -> int:
     return 0
 
 
-def _summary_system_text(
-    connection: sqlite3.Connection, instruction: CoachInstruction, zone: ZoneInfo
-) -> str:
-    macro = read_active_macro(connection)
-    rendered = instruction.render(
-        now=datetime.now(UTC),
-        zone=zone,
-        athlete_name=None,
-        race_date=None if macro is None else date.fromisoformat(macro.race_date),
-    )
-    return athlete_summary_system_text(rendered)
-
-
 def _stored_rewrite(
     connection: sqlite3.Connection,
     llm_config: LLMConfig,
@@ -134,7 +118,9 @@ def _rewrite_summary(week_start_text: str, inputs: _CommandInputs) -> int:
     initialize_database(inputs.environ)
     with closing(connect(database_path_from_environment(inputs.environ))) as connection:
         context = assemble_coach_context(connection, target)
-        system = _summary_system_text(connection, instruction, zone)
+        system = athlete_summary_system(
+            connection, instruction, now=datetime.now(UTC), zone=zone
+        )
         stored = _stored_rewrite(
             connection, llm_config, inputs.transport, system=system, context=context
         )

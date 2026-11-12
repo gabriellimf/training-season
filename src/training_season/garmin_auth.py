@@ -49,7 +49,7 @@ from training_season.garmin_auth_base import (
     GarminUnavailableError,
 )
 from training_season.garmin_login import (
-    GARMIN_REQUEST_ERRORS,
+    GARMIN_CALL_ERRORS,
     credential_login_session,
     garmin_response_status,
     has_rejected_token_status,
@@ -225,7 +225,7 @@ def garmin_session(
         session = _authenticated_session(config, token_path, factory)
         try:
             yield session
-        except GARMIN_REQUEST_ERRORS as error:
+        except GARMIN_CALL_ERRORS as error:
             raise garmin_request_error(error) from error
 
 
@@ -331,7 +331,8 @@ def _run_garmin_command(command: str) -> int:
         return _apply_stdin_text(sys.stdin.read, partial(import_token, config))
     elif command == "check":
         with garmin_session(config):
-            sys.stdout.write("Garmin session OK\n")
+            pass
+        sys.stdout.write("Garmin session OK\n")
     else:
         _print_auth_status(config)
     return 0

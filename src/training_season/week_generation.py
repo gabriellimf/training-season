@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 from pydantic import ValidationError
 
 from training_season.bounded_text import text_length_errors
-from training_season.coach_context import assemble_coach_context
 from training_season.llm import ChatTurn, LLMJob
 from training_season.push_week import PushWeek, PushWeekError, push_week_from_text
 from training_season.validated_reply import (
@@ -19,7 +18,6 @@ from training_season.workout_request import JSON_ONLY_HEADER, WORKOUT_FIELD_RULE
 from training_season.workout_validation import json_body
 
 if TYPE_CHECKING:
-    import sqlite3
     from datetime import date
 
     from training_season.llm import LLMAdapter
@@ -38,7 +36,7 @@ sem acento, por exemplo "26/10 10x400". Cada treino da semana tem um nome difere
 Cada workout segue as regras abaixo.
 {WORKOUT_FIELD_RULES}"""
 
-_REJECTION_HEADLINE = (
+WEEK_REJECTION_HEADLINE = (
     "O treinador devolveu uma semana inválida duas vezes. Nada foi enviado ao Garmin."
 )
 
@@ -87,25 +85,25 @@ def _week_request_turn(context_text: str, first_day: date, last_day: date) -> Ch
 
 
 def generate_week(
-    connection: sqlite3.Connection,
     adapter: LLMAdapter,
     *,
     instruction_text: str,
+    context_text: str,
     first_day: date,
     last_day: date,
 ) -> WeekOutcome:
     """
     Ask the plan model for first_day..last_day from the coach context. Stores nothing.
 
-    Used as `generate_week(connection, adapter, instruction_text=rendered,
+    Used as `generate_week(adapter, instruction_text=rendered,
+    context_text=assemble_coach_context(connection, first_day).text,
     first_day=date(2027, 1, 6), last_day=date(2027, 1, 10))`
     """
-    context_text = assemble_coach_context(connection, first_day).text
     return request_with_one_retry(
         adapter,
         LLMJob.PLAN,
         system=week_system_text(instruction_text),
         turns=(_week_request_turn(context_text, first_day, last_day),),
         parse=lambda text: week_from_text(text, first_day, last_day),
-        rejection_headline=_REJECTION_HEADLINE,
+        rejection_headline=WEEK_REJECTION_HEADLINE,
     )

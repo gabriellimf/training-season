@@ -93,7 +93,9 @@ GARMIN_REQUEST_ERRORS = (
     GarminConnectTooManyRequestsError,
     GarminConnectConnectionError,
 )
-_TOKEN_LOGIN_ERRORS = (*GARMIN_REQUEST_ERRORS, OSError)
+# garminconnect does not wrap transport errors; curl_cffi and requests raise OSError.
+GARMIN_CALL_ERRORS = (*GARMIN_REQUEST_ERRORS, OSError)
+_TOKEN_LOGIN_ERRORS = GARMIN_CALL_ERRORS
 
 
 def _exception_chain(error: BaseException) -> Iterator[BaseException]:
