@@ -2,20 +2,24 @@
 
 import logging
 import sqlite3
-from datetime import date
+from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from athlete_summary_fakes import FAKE_REQUEST_ID, ScriptedSummaryAdapter
 from coach_context_rows import insert_summary
+from schema_rows import _insert_macro
 from training_season.athlete_summary import (
     ATHLETE_SUMMARY_CONTRACT,
     MAX_ATHLETE_SUMMARY_CHARS,
     AthleteSummaryRejectedError,
+    athlete_summary_system,
     athlete_summary_system_text,
     update_athlete_summary,
 )
 from training_season.coach_context import CoachContext, assemble_coach_context
+from training_season.coach_instruction import load_coach_instruction
 from training_season.llm import ChatTurn, LLMJob, LLMUnavailableError
 
 _TARGET = date(2026, 11, 2)
@@ -139,6 +143,24 @@ def test_system_text_ends_with_the_contract() -> None:
     assert text.endswith(ATHLETE_SUMMARY_CONTRACT)
     assert str(MAX_ATHLETE_SUMMARY_CHARS) in ATHLETE_SUMMARY_CONTRACT
     assert '"Semanas até a prova" da seção "Check-in"' in ATHLETE_SUMMARY_CONTRACT
+
+
+def test_rendered_system_holds_the_race_date_and_no_athlete_name(
+    migrated_connection: sqlite3.Connection,
+) -> None:
+    _insert_macro(migrated_connection, race_date="2027-06-01")
+    instruction = load_coach_instruction({})
+
+    text = athlete_summary_system(
+        migrated_connection,
+        instruction,
+        now=datetime(2026, 11, 11, 12, 0, tzinfo=UTC),
+        zone=ZoneInfo("America/Sao_Paulo"),
+    )
+
+    assert "2027-06-01" in text
+    assert "Atleta: -" in text
+    assert text.endswith(ATHLETE_SUMMARY_CONTRACT)
 
 
 def test_logs_hold_ids_and_lengths_but_no_text(

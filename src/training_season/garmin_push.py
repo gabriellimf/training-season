@@ -25,7 +25,7 @@ from training_season.garmin_auth import (
     garmin_request_error,
     garmin_session,
 )
-from training_season.garmin_login import GARMIN_REQUEST_ERRORS, garmin_response_status
+from training_season.garmin_login import GARMIN_CALL_ERRORS, garmin_response_status
 from training_season.garmin_workout_payload import running_workout
 from training_season.push_result import PushFailure, PushResult, PushStep
 from training_season.push_store import (
@@ -61,7 +61,6 @@ _MISSING_ID_REASONS = {
     WORKOUT_ID_KEY: "o Garmin não devolveu o id do treino",
     SCHEDULE_ID_KEY: "o Garmin não devolveu o id do agendamento",
 }
-_GARMIN_CALL_ERRORS = (*GARMIN_REQUEST_ERRORS, OSError)
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -92,7 +91,7 @@ def _request_reason(error: Exception) -> str:
 def _garmin_call[Response](step: PushStep, call: Callable[[], Response]) -> Response:
     try:
         return call()
-    except _GARMIN_CALL_ERRORS as error:
+    except GARMIN_CALL_ERRORS as error:
         raise _GarminCallFailedError(step, _request_reason(error)) from error
 
 

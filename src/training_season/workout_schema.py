@@ -1,5 +1,6 @@
 """Pydantic envelope for one running workout returned by the coach model."""
 
+from collections.abc import Iterator
 from typing import Annotated, Literal, Self
 
 from pydantic import (
@@ -51,6 +52,11 @@ class PaceRange(BaseModel):
 
     min: float = Field(gt=0, le=100)
     max: float = Field(gt=0, le=100)
+
+    @property
+    def middle_mps(self) -> float:
+        """Pace a planned step counts at, for its km and time: `pace.middle_mps`."""
+        return (self.min + self.max) / 2
 
     @model_validator(mode="after")
     def _require_ordered_range(self) -> Self:
@@ -192,3 +198,17 @@ def count_steps(steps: list[WorkoutStep]) -> int:
     return sum(
         1 + len(step.steps) if isinstance(step, RepeatGroup) else 1 for step in steps
     )
+
+
+def steps_as_run(steps: list[WorkoutStep]) -> Iterator[TimedStep]:
+    """
+    Yield the timed steps in run order, each repeat child once per iteration.
+
+    Used as `sum(map(step_seconds, steps_as_run(workout.steps)))`
+    """
+    for step in steps:
+        if isinstance(step, RepeatGroup):
+            for _ in range(step.count):
+                yield from step.steps
+        else:
+            yield step

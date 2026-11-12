@@ -115,7 +115,12 @@ def default_adapter_factory(environ: Mapping[str, str]) -> LLMAdapter:
     return new_llm_adapter(llm_config_from_environment(environ))
 
 
-def _utc_now() -> datetime:
+def utc_clock() -> datetime:
+    """
+    Return the current aware UTC time, the default clock of the coach commands.
+
+    Used as `main(clock=utc_clock)`
+    """
     return datetime.now(UTC)
 
 
@@ -248,7 +253,7 @@ def main(
     environ: Mapping[str, str] | None = None,
     adapter_factory: AdapterFactory = default_adapter_factory,
     garmin_factory: GarminFactory = default_garmin_factory,
-    clock: Callable[[], datetime] = _utc_now,
+    clock: Callable[[], datetime] = utc_clock,
     read_line: Callable[[str], str] = input,
     out: TextIO | None = None,
 ) -> int:

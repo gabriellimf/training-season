@@ -7,14 +7,18 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from training_season.coach_context_lines import first_unsafe_control
+from training_season.coach_system import active_race_date
 from training_season.database import transaction
 from training_season.llm import ChatTurn, LLMJob
 from training_season.timeformat import utc_now
 
 if TYPE_CHECKING:
     import sqlite3
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
 
     from training_season.coach_context import CoachContext
+    from training_season.coach_instruction import CoachInstruction
     from training_season.llm import LLMAdapter, LLMReply
 
 MAX_ATHLETE_SUMMARY_CHARS = 4000
@@ -60,6 +64,27 @@ def athlete_summary_system_text(instruction_text: str) -> str:
     Used as `athlete_summary_system_text(instruction.render(...))`
     """
     return f"{instruction_text}\n\n{ATHLETE_SUMMARY_CONTRACT}"
+
+
+def athlete_summary_system(
+    connection: sqlite3.Connection,
+    instruction: CoachInstruction,
+    *,
+    now: datetime,
+    zone: ZoneInfo,
+) -> str:
+    """
+    Render the instruction with the active race date, then add the summary contract.
+
+    Used as `athlete_summary_system(connection, instruction, now=now, zone=zone)`
+    """
+    rendered = instruction.render(
+        now=now,
+        zone=zone,
+        athlete_name=None,
+        race_date=active_race_date(connection),
+    )
+    return athlete_summary_system_text(rendered)
 
 
 def _first_heading_line(summary: str) -> int | None:

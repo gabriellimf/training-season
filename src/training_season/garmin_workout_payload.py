@@ -17,7 +17,7 @@ from garminconnect.workout import (
 )
 from garminconnect.workout import RepeatGroup as GarminRepeatGroup
 
-from training_season.workout_schema import RepeatGroup, count_steps
+from training_season.workout_schema import RepeatGroup, count_steps, steps_as_run
 
 if TYPE_CHECKING:
     from garminconnect.workout import IntensityTarget
@@ -103,7 +103,9 @@ def running_workout(workout: Workout) -> RunningWorkout:
     return RunningWorkout(
         workoutName=workout.name,
         description=workout.description,
-        estimatedDurationInSecs=round(sum(map(_estimated_seconds, workout.steps))),
+        estimatedDurationInSecs=round(
+            sum(map(_timed_step_seconds, steps_as_run(workout.steps)))
+        ),
         workoutSegments=[segment],
     )
 
@@ -209,14 +211,8 @@ def _cadence_note(step: TimedStep) -> str | None:
     return f"Cadência {step.cadence_spm.min}-{step.cadence_spm.max} spm"
 
 
-def _estimated_seconds(step: WorkoutStep) -> float:
-    if isinstance(step, RepeatGroup):
-        return step.count * sum(map(_timed_step_seconds, step.steps))
-    return _timed_step_seconds(step)
-
-
 def _timed_step_seconds(step: TimedStep) -> float:
     _, end_value = _end_condition(step.duration)
     if step.duration.seconds is not None:
         return end_value
-    return end_value / ((step.pace_mps.min + step.pace_mps.max) / 2)
+    return end_value / step.pace_mps.middle_mps

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from training_season.workout_schema import Workout
+from training_season.workout_schema import Workout, steps_as_run
 from workout_fixtures import (
     JsonObject,
     easy_step,
@@ -50,6 +50,25 @@ def test_repeat_count_is_not_multiplied_into_the_step_count() -> None:
     steps = [repeat_group(99, [easy_step("interval"), easy_step("recovery")])]
 
     assert Workout.model_validate(workout_with_steps(steps)).steps
+
+
+def test_steps_as_run_repeats_children_and_pace_middle_is_the_mean() -> None:
+    steps = [
+        easy_step(),
+        repeat_group(2, [easy_step("interval"), easy_step("recovery")]),
+    ]
+    workout = Workout.model_validate(workout_with_steps(steps))
+
+    run = list(steps_as_run(workout.steps))
+
+    assert [step.type for step in run] == [
+        "warmup",
+        "interval",
+        "recovery",
+        "interval",
+        "recovery",
+    ]
+    assert run[0].pace_mps.middle_mps == pytest.approx(2.75)
 
 
 def test_repeat_count_one_hundred_is_rejected() -> None:

@@ -11,7 +11,7 @@ from training_season.workout_schema import Workout
 
 _FENCED_JSON = re.compile(r"\A```json[ \t]*\n(.*)\n```\Z", re.DOTALL)
 _MAX_LINE_LENGTH = 200
-_MAX_LINES = 20
+MAX_ERROR_LINES = 20
 _DROPPED_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
 
 
@@ -35,10 +35,10 @@ class WorkoutValidationError(ValueError):
         items = error.errors()
         lines = [
             bounded_line(f"{_json_path(item['loc'])}: {item['msg']}")
-            for item in items[:_MAX_LINES]
+            for item in items[:MAX_ERROR_LINES]
         ]
-        if len(items) > _MAX_LINES:
-            lines.append(f"and {len(items) - _MAX_LINES} more errors")
+        if len(items) > MAX_ERROR_LINES:
+            lines.append(f"and {len(items) - MAX_ERROR_LINES} more errors")
         return cls(tuple(lines))
 
 

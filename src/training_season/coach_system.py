@@ -37,7 +37,12 @@ def _stored_athlete_name(connection: sqlite3.Connection) -> str | None:
     return profile.athlete_name
 
 
-def _active_race_date(connection: sqlite3.Connection) -> date | None:
+def active_race_date(connection: sqlite3.Connection) -> date | None:
+    """
+    Return the race date of the active macro plan, or None with no active plan.
+
+    Used as `active_race_date(connection)`
+    """
     macro = read_active_macro(connection)
     return None if macro is None else date.fromisoformat(macro.race_date)
 
@@ -60,5 +65,5 @@ def render_coach_system(
         now=now,
         zone=zone,
         athlete_name=_stored_athlete_name(connection),
-        race_date=_active_race_date(connection),
+        race_date=active_race_date(connection),
     )

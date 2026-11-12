@@ -81,6 +81,25 @@ def upsert_weekly_plan(
     return int(row[0])
 
 
+def active_weekly_plan_id(
+    connection: sqlite3.Connection, week_start: date
+) -> int | None:
+    """
+    Return the id of the active macro plan's week that starts on week_start, or None.
+
+    Used as `active_weekly_plan_id(connection, date(2027, 1, 4))`
+    """
+    row = connection.execute(
+        """
+        SELECT weekly_plan.id FROM weekly_plan
+        JOIN macro_plan ON macro_plan.id = weekly_plan.macro_plan_id
+        WHERE macro_plan.status = 'active' AND weekly_plan.week_start = ?
+        """,
+        (week_start.isoformat(),),
+    ).fetchone()
+    return None if row is None else int(row[0])
+
+
 def stored_workouts(
     connection: sqlite3.Connection, first_day: date, last_day: date
 ) -> tuple[StoredWorkout, ...]:
