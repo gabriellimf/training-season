@@ -1,26 +1,41 @@
+x-app-environment: &app-environment
+  TZ: America/Sao_Paulo
+  DATABASE_PATH: /data/training-season.db
+  GARMIN_TOKEN_DIR: /data/garmin
+  GARMIN_HISTORY_START: ${GARMIN_HISTORY_START:-}
+  GARMIN_EMAIL: ${GARMIN_EMAIL:-}
+  GARMIN_PASSWORD: ${GARMIN_PASSWORD:-}
+  LLM_PROVIDER: ${LLM_PROVIDER:-}
+  OPENAI_COMPATIBLE_API_KEY: ${OPENAI_COMPATIBLE_API_KEY:-}
+  OPENAI_COMPATIBLE_BASE_URL: ${OPENAI_COMPATIBLE_BASE_URL:-}
+  OPENAI_COMPATIBLE_PLAN_MODEL: ${OPENAI_COMPATIBLE_PLAN_MODEL:-}
+  OPENAI_COMPATIBLE_CHAT_MODEL: ${OPENAI_COMPATIBLE_CHAT_MODEL:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  CLAUDE_PLAN_MODEL: ${CLAUDE_PLAN_MODEL:-}
+  CLAUDE_PLAN_EFFORT: ${CLAUDE_PLAN_EFFORT:-}
+  CLAUDE_CHAT_MODEL: ${CLAUDE_CHAT_MODEL:-}
+  CLAUDE_CHAT_EFFORT: ${CLAUDE_CHAT_EFFORT:-}
+  COACH_INSTRUCTION_PATH: ${COACH_INSTRUCTION_PATH:-}
+
 services:
   app:
     build: .
-    environment:
-      TZ: America/Sao_Paulo
-      DATABASE_PATH: /data/training-season.db
-      GARMIN_TOKEN_DIR: /data/garmin
-      GARMIN_HISTORY_START: ${GARMIN_HISTORY_START:-}
-      GARMIN_EMAIL: ${GARMIN_EMAIL:-}
-      GARMIN_PASSWORD: ${GARMIN_PASSWORD:-}
-      LLM_PROVIDER: ${LLM_PROVIDER:-}
-      OPENAI_COMPATIBLE_API_KEY: ${OPENAI_COMPATIBLE_API_KEY:-}
-      OPENAI_COMPATIBLE_BASE_URL: ${OPENAI_COMPATIBLE_BASE_URL:-}
-      OPENAI_COMPATIBLE_PLAN_MODEL: ${OPENAI_COMPATIBLE_PLAN_MODEL:-}
-      OPENAI_COMPATIBLE_CHAT_MODEL: ${OPENAI_COMPATIBLE_CHAT_MODEL:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      CLAUDE_PLAN_MODEL: ${CLAUDE_PLAN_MODEL:-}
-      CLAUDE_PLAN_EFFORT: ${CLAUDE_PLAN_EFFORT:-}
-      CLAUDE_CHAT_MODEL: ${CLAUDE_CHAT_MODEL:-}
-      CLAUDE_CHAT_EFFORT: ${CLAUDE_CHAT_EFFORT:-}
-      COACH_INSTRUCTION_PATH: ${COACH_INSTRUCTION_PATH:-}
+    environment: *app-environment
     volumes:
       # SQLite file and Garmin token cache. Survives image rebuilds.
+      - data:/data
+
+  scheduler:
+    build: .
+    # supercronic does not pass SIGTERM to a job, so a stop kills a running cycle.
+    # `;` keeps the scheduler up when the close fails.
+    command:
+      - sh
+      - -c
+      - training-season-weekly --close-open-runs; exec supercronic /app/deploy/crontab
+    restart: unless-stopped
+    environment: *app-environment
+    volumes:
       - data:/data
 
 volumes:

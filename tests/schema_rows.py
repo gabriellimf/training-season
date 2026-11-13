@@ -22,6 +22,7 @@ _TABLE_NAMES = (
     "message",
     "coach_summary",
     "onboarding_session",
+    "cycle_run",
 )
 
 

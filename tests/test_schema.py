@@ -1,7 +1,7 @@
 """
 Tests for STRICT tables and the table constraints.
 
-Covers profile, activity, wellness, checkin, message and coach_summary.
+Covers profile, activity, wellness, checkin, message, coach_summary and cycle_run.
 """
 
 import sqlite3
@@ -198,6 +198,61 @@ def test_utc_now_is_accepted_by_schema(
     assert migrated_connection.execute(
         "SELECT created_at FROM coach_summary"
     ).fetchone() == (created_at,)
+
+
+_INSERT_CYCLE_RUN = (
+    "INSERT INTO cycle_run "
+    "(trigger, started_at, ended_at, outcome, exit_code, message_id) "
+    "VALUES (?, ?, ?, ?, ?, ?)"
+)
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        ("manual", _CREATED_AT, None, None, None, None),
+        ("scheduled", _CREATED_AT, _CREATED_AT, "done", 0, None),
+        ("manual", _CREATED_AT, _CREATED_AT, "refused", 4, None),
+    ],
+)
+def test_cycle_run_accepts_open_and_ended_rows(
+    migrated_connection: sqlite3.Connection, row: tuple[object, ...]
+) -> None:
+    migrated_connection.execute(_INSERT_CYCLE_RUN, row)
+
+    assert migrated_connection.execute("SELECT count(*) FROM cycle_run").fetchone() == (
+        1,
+    )
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        ("cron", _CREATED_AT, None, None, None, None),
+        ("manual", "2026-11-13 20:00:00", None, None, None, None),
+        ("manual", _CREATED_AT, "2026-11-13", "done", 0, None),
+        ("manual", _CREATED_AT, _CREATED_AT, "skipped", 0, None),
+        ("manual", _CREATED_AT, _CREATED_AT, None, 0, None),
+        ("manual", _CREATED_AT, _CREATED_AT, "done", None, None),
+        ("manual", _CREATED_AT, None, "done", 0, None),
+        ("manual", _CREATED_AT, _CREATED_AT, "done", 0, 999),
+    ],
+    ids=[
+        "trigger",
+        "started_at",
+        "ended_at",
+        "outcome",
+        "no_outcome",
+        "no_exit_code",
+        "no_ended_at",
+        "message",
+    ],
+)
+def test_cycle_run_rejects_bad_rows(
+    migrated_connection: sqlite3.Connection, row: tuple[object, ...]
+) -> None:
+    with pytest.raises(sqlite3.IntegrityError):
+        migrated_connection.execute(_INSERT_CYCLE_RUN, row)
 
 
 @pytest.mark.parametrize("table", ["activity", "wellness"])

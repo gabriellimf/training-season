@@ -15,6 +15,7 @@ from training_season.coach_instruction import (
     CoachInstructionError,
     load_coach_instruction,
 )
+from training_season.cycle_run_store import CycleRunNotice
 from training_season.database import (
     DatabaseConfigurationError,
     MigrationError,
@@ -30,37 +31,48 @@ from training_season.garmin_auth import (
 from training_season.garmin_pull import history_start_from_environment
 from training_season.llm import LLMConfigurationError
 from training_season.onboarding_cli import default_adapter_factory, utc_clock
-from training_season.onboarding_store import insert_cycle_message
 from training_season.push_store import NoActiveMacroPlanError, active_macro_plan_id
 from training_season.timeformat import (
     TrainingTimezoneError,
     training_zone_from_environment,
 )
 from training_season.weekly_cycle import CycleSetup, run_weekly_cycle
+from training_season.weekly_job import (
+    WeeklyJob,
+    close_runs_left_open,
+    run_weekly_job,
+    stop_signals_interrupt,
+)
+from training_season.weekly_job_text import pre_step_text
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
     from datetime import datetime
     from typing import TextIO
+    from zoneinfo import ZoneInfo
 
+    from training_season.cycle_run_store import CycleRunOutcome, CycleTrigger
     from training_season.garmin_auth import GarminFactory
     from training_season.onboarding_cli import AdapterFactory
     from training_season.weekly_cycle import CycleOutcome
 
-_USAGE = "training-season-weekly [--help]"
+_USAGE = "training-season-weekly [--scheduled | --close-open-runs] [--help]"
+_SCHEDULED = ("--scheduled",)
+_CLOSE_OPEN_RUNS = ("--close-open-runs",)
 _INPUT_ERROR = 2
 _MFA_HINT = (
     "Conclua o login com `training-season-garmin` e depois rode "
     "`training-season-weekly` de novo."
 )
-_INPUT_ERRORS = (
-    DatabaseConfigurationError,
+_PRE_STEP_ERRORS = (
     LLMConfigurationError,
     CoachInstructionError,
     TrainingTimezoneError,
     GarminConfigurationError,
     NoActiveMacroPlanError,
+    sqlite3.Error,
 )
+_CLOSE_ERRORS = (DatabaseConfigurationError, MigrationError, sqlite3.Error, OSError)
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,39 +95,75 @@ def _cycle_setup(inputs: _CommandInputs) -> CycleSetup:
     )
 
 
-def _published(
-    connection: sqlite3.Connection, outcome: CycleOutcome, out: TextIO
-) -> int:
-    out.write(f"{outcome.chat_message}\n")
+def _cycle_notice(outcome: CycleOutcome) -> CycleRunNotice:
     if outcome.garmin_login_needed:
         sys.stderr.write(f"{_MFA_HINT}\n")
-    try:
-        insert_cycle_message(connection, outcome.chat_message, outcome.weekly_plan_id)
-    except sqlite3.Error as error:
-        sys.stderr.write(f"weekly cycle chat message was not stored: {error}\n")
-        return 1
-    return outcome.exit_code
+    run_outcome: CycleRunOutcome = "done" if outcome.exit_code == 0 else "failed"
+    return CycleRunNotice(
+        run_outcome, outcome.exit_code, outcome.chat_message, outcome.weekly_plan_id
+    )
 
 
-def _run_cycle(inputs: _CommandInputs) -> int:
-    setup = _cycle_setup(inputs)
-    adapter = inputs.adapter_factory(inputs.environ)
+def _pre_step_notice(error: Exception) -> CycleRunNotice:
+    exit_code = 1 if isinstance(error, sqlite3.Error) else _INPUT_ERROR
+    report_failure(error, exit_code)
+    return CycleRunNotice("failed", exit_code, pre_step_text(error))
+
+
+def _run_cycle(
+    connection: sqlite3.Connection, inputs: _CommandInputs
+) -> CycleRunNotice:
     try:
-        initialize_database(inputs.environ)
+        setup = _cycle_setup(inputs)
+        active_macro_plan_id(connection)
+        adapter = inputs.adapter_factory(inputs.environ)
+    except _PRE_STEP_ERRORS as error:
+        return _pre_step_notice(error)
+    with closing(adapter), stop_signals_interrupt():
+        outcome = run_weekly_cycle(connection, adapter, setup)
+    return _cycle_notice(outcome)
+
+
+def _zone_or_none(environ: Mapping[str, str]) -> ZoneInfo | None:
+    try:
+        return training_zone_from_environment(environ)
+    except TrainingTimezoneError:
+        return None
+
+
+def _run_job(inputs: _CommandInputs, trigger: CycleTrigger) -> int:
+    path = database_path_from_environment(inputs.environ)
+    initialize_database(inputs.environ)
+    with closing(connect(path)) as connection:
+        job = WeeklyJob(
+            trigger=trigger,
+            zone=_zone_or_none(inputs.environ),
+            out=inputs.out,
+            body=lambda: _run_cycle(connection, inputs),
+        )
+        return run_weekly_job(connection, path, job)
+
+
+def _close_runs_command(inputs: _CommandInputs) -> int:
+    try:
         path = database_path_from_environment(inputs.environ)
+        initialize_database(inputs.environ)
         with closing(connect(path)) as connection:
-            active_macro_plan_id(connection)
-            outcome = run_weekly_cycle(connection, adapter, setup)
-            return _published(connection, outcome, inputs.out)
-    finally:
-        adapter.close()
+            zone = _zone_or_none(inputs.environ)
+            close_runs_left_open(connection, path, zone, inputs.out)
+    except _CLOSE_ERRORS as error:
+        return report_failure(error, 1)
+    return 0
 
 
-def _weekly_cli(_arguments: tuple[str, ...], inputs: _CommandInputs) -> int:
+def _weekly_cli(arguments: tuple[str, ...], inputs: _CommandInputs) -> int:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+    if arguments == _CLOSE_OPEN_RUNS:
+        return _close_runs_command(inputs)
+    trigger: CycleTrigger = "scheduled" if arguments == _SCHEDULED else "manual"
     try:
-        return _run_cycle(inputs)
-    except _INPUT_ERRORS as error:
+        return _run_job(inputs, trigger)
+    except DatabaseConfigurationError as error:
         return report_failure(error, _INPUT_ERROR)
     except (MigrationError, sqlite3.Error) as error:
         return report_failure(error, 1)
@@ -133,7 +181,9 @@ def main(
     """
     Run the weekly cycle for the Monday-to-Sunday week after today.
 
-    Used as `main([])`
+    `--scheduled` records the run as started by the scheduler. `--close-open-runs`
+    runs no cycle: it only closes the runs a killed process left open.
+    Used as `main([])`, `main(["--scheduled"])` or `main(["--close-open-runs"])`
     """
     inputs = _CommandInputs(
         environ=os.environ if environ is None else environ,
@@ -142,7 +192,12 @@ def main(
         clock=clock,
         out=sys.stdout if out is None else out,
     )
-    return run_cli(argv, _USAGE, {()}, lambda arguments: _weekly_cli(arguments, inputs))
+    return run_cli(
+        argv,
+        _USAGE,
+        {(), _SCHEDULED, _CLOSE_OPEN_RUNS},
+        lambda arguments: _weekly_cli(arguments, inputs),
+    )
 
 
 if __name__ == "__main__":

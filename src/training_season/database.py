@@ -131,8 +131,9 @@ def transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     if connection.in_transaction:
         raise ValueError("connection already has an open transaction")
 
-    connection.execute("BEGIN IMMEDIATE")
     try:
+        # A signal handler can raise as BEGIN returns, with the transaction open.
+        connection.execute("BEGIN IMMEDIATE")
         yield connection
     except BaseException as body_error:
         _roll_back_after_error(connection, body_error)
