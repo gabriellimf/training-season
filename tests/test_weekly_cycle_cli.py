@@ -3,36 +3,35 @@
 from __future__ import annotations
 
 import json
-from contextlib import closing
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
-from io import StringIO
-from pathlib import Path
+from datetime import date
 from typing import TYPE_CHECKING
 
 import pytest
 
 from garmin_auth_fakes import _write_fake_token
 from garmin_pull_fakes import _connection_error
-from garmin_push_fakes import week_text, workout_rows
 from llm_fakes import QueuedReplyAdapter, UnavailableAdapter
-from schema_rows import _insert_macro
-from training_season.database import connect, initialize_database
 from training_season.weekly_cycle import next_week_range
-from training_season.weekly_cycle_cli import main
-from weekly_cycle_fakes import ChatFailingAdapter, CycleGarminFactory
+from weekly_cycle_fakes import (
+    SUMMARY_REPLY,
+    WEEK_REPLY,
+    ChatFailingAdapter,
+    CycleRun,
+    WeeklyCli,
+    new_weekly_cli,
+)
 
 if TYPE_CHECKING:
-    import sqlite3
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable
+    from pathlib import Path
 
     from garmin_auth_fakes import FakeGarminServer
     from training_season.garmin_auth import GarminAuthConfig
     from training_season.llm import LLMAdapter
 
-_WEDNESDAY_NOON = datetime(2026, 11, 11, 15, 0, tzinfo=UTC)
-_WEEK_REPLY = week_text(["2026-11-17", "2026-11-19"], week_start="2026-11-16")
-_SUMMARY_REPLY = "Resumo reescrito."
+_WEEK_REPLY = WEEK_REPLY
+_SUMMARY_REPLY = SUMMARY_REPLY
 _PUSHED = "Semana de 16/11 enviada ao Garmin. Agendados: 17/11, 19/11."
 _NOT_RUN = "As etapas seguintes não rodaram."
 _ERROR_DETAIL = "simulated connection failure"
@@ -50,80 +49,11 @@ def _interval_in_seconds_reply(workout_index: int) -> str:
     return json.dumps(reply)
 
 
-@dataclass(frozen=True)
-class CycleRun:
-    code: int
-    out: str
-    adapter: LLMAdapter
-    garmin: CycleGarminFactory
-
-
-@dataclass
-class WeeklyCli:
-    """Runs `main` with a fake model, a fake Garmin and a fixed Wednesday clock."""
-
-    environ: dict[str, str]
-    garmin: CycleGarminFactory
-    replies: list[str] = field(default_factory=lambda: [_WEEK_REPLY, _SUMMARY_REPLY])
-    adapter: LLMAdapter | None = None
-
-    def run(self, argv: Sequence[str] = ()) -> CycleRun:
-        adapter = self.adapter or QueuedReplyAdapter(list(self.replies))
-        out = StringIO()
-        code = main(
-            argv,
-            environ=self.environ,
-            adapter_factory=lambda _environ: adapter,
-            garmin_factory=self.garmin,
-            clock=lambda: _WEDNESDAY_NOON,
-            out=out,
-        )
-        return CycleRun(code, out.getvalue(), adapter, self.garmin)
-
-    def database(self) -> closing[sqlite3.Connection]:
-        initialize_database(self.environ)
-        return closing(connect(Path(self.environ["DATABASE_PATH"])))
-
-    def messages(self) -> list[tuple[str, str, int | None]]:
-        with self.database() as connection:
-            rows = connection.execute(
-                "SELECT role, content, weekly_plan_id FROM message ORDER BY id"
-            )
-            return rows.fetchall()
-
-    def summary_count(self) -> int:
-        with self.database() as connection:
-            row = connection.execute("SELECT count(*) FROM coach_summary").fetchone()
-            return int(row[0])
-
-    def workout_dates(self) -> list[str]:
-        with self.database() as connection:
-            return [row[1] for row in workout_rows(connection)]
-
-    def stored_week_id(self) -> int:
-        with self.database() as connection:
-            row = connection.execute(
-                "SELECT id FROM weekly_plan WHERE week_start = '2026-11-16'"
-            ).fetchone()
-            return int(row[0])
-
-
 @pytest.fixture
 def cli(
     database_path: Path, auth_config: GarminAuthConfig, fake_server: FakeGarminServer
 ) -> WeeklyCli:
-    environ = {
-        "DATABASE_PATH": str(database_path),
-        "TZ": "America/Sao_Paulo",
-        "GARMIN_TOKEN_DIR": str(auth_config.token_dir),
-        "GARMIN_EMAIL": "runner@example.test",
-        "GARMIN_PASSWORD": "not-a-real-password",
-        "GARMIN_HISTORY_START": "2026-11-01",
-    }
-    weekly = WeeklyCli(environ, CycleGarminFactory(fake_server))
-    with weekly.database() as connection:
-        _insert_macro(connection, start_date="2026-11-09", race_date="2027-04-18")
-    return weekly
+    return new_weekly_cli(database_path, auth_config, fake_server)
 
 
 @pytest.fixture
@@ -435,21 +365,41 @@ def test_message_write_failure_exits_one_on_stderr(
     cli: WeeklyCli, capsys: pytest.CaptureFixture[str]
 ) -> None:
     with cli.database() as connection:
-        connection.execute("DROP TABLE message")
+        connection.execute(
+            "CREATE TRIGGER message_store_fails BEFORE INSERT ON message "
+            f"BEGIN SELECT RAISE(ABORT, '{_ERROR_DETAIL}'); END"
+        )
 
     run = cli.run()
 
     assert run.code == 1
     assert "chat message" in capsys.readouterr().err
     assert run.out.startswith("Treinos da semana de 16/11 a 22/11:")
+    assert cli.cycle_runs() == [("manual", "failed", 1, None)]
+
+
+def _assert_not_run_message(cli: WeeklyCli, run: CycleRun, cause: str) -> None:
+    [(_, content, weekly_plan_id)] = cli.messages()
+    assert content == f"Ciclo semanal não rodou: {cause}"
+    assert weekly_plan_id is None
+    assert run.out == f"{content}\n"
 
 
 @pytest.mark.usefixtures("signed_in")
 @pytest.mark.parametrize(
-    ("variable", "value"), [("TZ", "Not/AZone"), ("GARMIN_HISTORY_START", "x")]
+    ("variable", "value", "cause"),
+    [
+        ("TZ", "Not/AZone", "o fuso horário em TZ não é válido."),
+        ("GARMIN_HISTORY_START", "x", "a configuração do Garmin não é válida."),
+        (
+            "COACH_INSTRUCTION_PATH",
+            "relative.md",
+            "a instrução do treinador não é válida.",
+        ),
+    ],
 )
-def test_config_error_exits_two_before_any_call_and_writes_no_message(
-    cli: WeeklyCli, variable: str, value: str
+def test_config_error_exits_two_before_any_call_and_stores_the_cause(
+    cli: WeeklyCli, variable: str, value: str, cause: str
 ) -> None:
     cli.environ[variable] = value
 
@@ -458,7 +408,7 @@ def test_config_error_exits_two_before_any_call_and_writes_no_message(
     assert run.code == 2
     assert _jobs(run.adapter) == []
     assert run.garmin.pull_clients == []
-    assert cli.messages() == []
+    _assert_not_run_message(cli, run, cause)
 
 
 @pytest.mark.usefixtures("signed_in")
@@ -470,11 +420,23 @@ def test_no_active_macro_exits_two_before_any_call(cli: WeeklyCli) -> None:
 
     assert run.code == 2
     assert run.garmin.pull_clients == []
-    assert cli.messages() == []
+    _assert_not_run_message(
+        cli,
+        run,
+        "não há plano macro ativo. Conclua o onboarding com "
+        "training-season-onboarding.",
+    )
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [["run"], ["--scheduled", "--scheduled"], ["--scheduled", "--close-open-runs"]],
+)
 def test_arguments_print_the_usage(
-    cli: WeeklyCli, capsys: pytest.CaptureFixture[str]
+    cli: WeeklyCli, capsys: pytest.CaptureFixture[str], argv: list[str]
 ) -> None:
-    assert cli.run(["run"]).code == 2
-    assert capsys.readouterr().err == "Usage: training-season-weekly [--help]\n"
+    assert cli.run(argv).code == 2
+    assert capsys.readouterr().err == (
+        "Usage: training-season-weekly [--scheduled | --close-open-runs] [--help]\n"
+    )
+    assert cli.messages() == []

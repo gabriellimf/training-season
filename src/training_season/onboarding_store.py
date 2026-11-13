@@ -134,18 +134,17 @@ def append_exchange(
         )
 
 
-def insert_cycle_message(
+def write_cycle_message(
     connection: sqlite3.Connection, content: str, weekly_plan_id: int | None
 ) -> int:
     """
-    Store the coach message of one weekly cycle run and return its id.
+    Store one weekly cycle coach message inside the caller's transaction.
 
-    Used as `insert_cycle_message(connection, "Treinos da semana...", 7)`
+    Used as `message_id = write_cycle_message(connection, "Ciclo semanal...", None)`
     """
-    with transaction(connection):
-        row = connection.execute(
-            _INSERT_CYCLE_MESSAGE, (content, weekly_plan_id, utc_now())
-        ).fetchone()
+    row = connection.execute(
+        _INSERT_CYCLE_MESSAGE, (content, weekly_plan_id, utc_now())
+    ).fetchone()
     return int(row[0])
 
 
