@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from training_season.athlete_profile import AthleteProfile
 from training_season.coach_context_store import read_active_macro, read_profile_json
+from training_season.timeformat import training_date
 from training_season.workout_validation import WorkoutValidationError
 
 if TYPE_CHECKING:
@@ -67,3 +68,20 @@ def render_coach_system(
         athlete_name=_stored_athlete_name(connection),
         race_date=active_race_date(connection),
     )
+
+
+def coach_system_for_now(
+    instruction: CoachInstruction,
+    connection: sqlite3.Connection,
+    *,
+    now: datetime,
+    zone: ZoneInfo,
+) -> tuple[str, date]:
+    """
+    Render the coach system for `now` and return it with the local date.
+
+    Used as `system, today = coach_system_for_now(instruction, connection,
+    now=clock(), zone=zone)`
+    """
+    rendered = render_coach_system(instruction, connection, now=now, zone=zone)
+    return rendered, date.fromisoformat(training_date(now, zone))

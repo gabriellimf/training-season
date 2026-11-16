@@ -124,7 +124,12 @@ def utc_clock() -> datetime:
     return datetime.now(UTC)
 
 
-def _connected(environ: Mapping[str, str]) -> closing[sqlite3.Connection]:
+def connected_database(environ: Mapping[str, str]) -> closing[sqlite3.Connection]:
+    """
+    Migrate the configured database, then open a connection closed on exit.
+
+    Used as `with connected_database(os.environ) as connection:`
+    """
     initialize_database(environ)
     return closing(connect(database_path_from_environment(environ)))
 
@@ -144,7 +149,7 @@ def _opened_coach(inputs: _CommandInputs) -> Iterator[Coach]:
     setup = _coach_setup(inputs)
     adapter = inputs.adapter_factory(inputs.environ)
     try:
-        with _connected(inputs.environ) as connection:
+        with connected_database(inputs.environ) as connection:
             yield Coach(connection, adapter, setup, inputs.out)
     finally:
         adapter.close()
@@ -163,7 +168,7 @@ def _run_week(_arguments: tuple[str, ...], inputs: _CommandInputs) -> int:
 
 
 def _run_discard(_arguments: tuple[str, ...], inputs: _CommandInputs) -> int:
-    with _connected(inputs.environ) as connection:
+    with connected_database(inputs.environ) as connection:
         confirmation = discard_session(connection)
     inputs.out.write(f"{confirmation}\n")
     return 0
@@ -210,7 +215,7 @@ def _plan_json_lines(connection: sqlite3.Connection, text: str) -> tuple[str, ..
 
 
 def _run_history(arguments: tuple[str, ...], inputs: _CommandInputs) -> int:
-    with _connected(inputs.environ) as connection:
+    with connected_database(inputs.environ) as connection:
         if len(arguments) == 1:
             lines = _history_lines(connection)
         else:

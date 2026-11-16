@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import TYPE_CHECKING
 
 import pytest
 
 from coach_instruction_helpers import _NOW, _ZONE, _load_text
 from onboarding_rows import CLOSING_EXCHANGE, valid_macro_plan, valid_result
-from training_season.coach_system import StoredProfileError, render_coach_system
+from training_season.coach_system import (
+    StoredProfileError,
+    coach_system_for_now,
+    render_coach_system,
+)
 from training_season.macro_store import store_onboarding_outcome
 from training_season.onboarding_store import open_session
 
@@ -58,3 +63,15 @@ def test_stored_profile_that_is_not_a_profile_names_the_problem(
 
     assert "profile.data_json is not an athlete profile" in str(raised.value)
     assert "athlete_name: Field required" in str(raised.value)
+
+
+def test_system_for_now_gives_the_local_date_of_the_moment(
+    migrated_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    instruction = _load_text(tmp_path, "Hoje: $today.")
+
+    rendered = coach_system_for_now(
+        instruction, migrated_connection, now=_NOW, zone=_ZONE
+    )
+
+    assert rendered == ("Hoje: 2026-03-01.", date(2026, 3, 1))

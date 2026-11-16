@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from training_season.llm import LLMJob, LLMReply, LLMUnavailableError, LLMUsage
+from training_season.llm_base import check_request
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -47,6 +48,17 @@ class QueuedReplyAdapter:
 
     def close(self) -> None:
         self.closed = True
+
+
+@dataclass
+class RequestCheckingAdapter(QueuedReplyAdapter):
+    """A queued fake that rejects a request the real adapters would reject."""
+
+    def complete(
+        self, job: LLMJob, *, system: str, turns: Sequence[ChatTurn]
+    ) -> LLMReply:
+        check_request(system, turns)
+        return super().complete(job, system=system, turns=turns)
 
 
 @dataclass

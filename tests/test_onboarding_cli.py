@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from console_fakes import ScriptedConsole
 from garmin_auth_fakes import _write_fake_token
 from garmin_push_fakes import (
     FakeGarminCalendar,
@@ -55,20 +56,6 @@ def tagged(visible: str, body: str = "") -> str:
 
 
 _COMPLETING = [tagged("Plano pronto."), macro_text(), _WEEK_REPLY]
-
-
-@dataclass
-class ScriptedConsole:
-    """Answers each prompt with the next line; EOF when the lines run out."""
-
-    lines: list[str]
-    prompts: list[str] = field(default_factory=list)
-
-    def read_line(self, prompt: str) -> str:
-        self.prompts.append(prompt)
-        if not self.lines:
-            raise EOFError
-        return self.lines.pop(0)
 
 
 @dataclass(frozen=True)

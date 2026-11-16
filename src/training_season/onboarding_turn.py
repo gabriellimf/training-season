@@ -48,7 +48,7 @@ MAX_ATHLETE_MESSAGE_LENGTH = 4_000
 MAX_SESSION_HISTORY_LENGTH = 100_000
 
 _LOGGER = logging.getLogger(__name__)
-_MESSAGE_TOO_LONG_TEXT = (
+MESSAGE_TOO_LONG_TEXT = (
     f"Sua mensagem passa de {MAX_ATHLETE_MESSAGE_LENGTH} caracteres. "
     "Envie um texto mais curto."
 )
@@ -115,7 +115,7 @@ def _refused_by_size(
     turn: _Turn, history: tuple[SessionMessage, ...]
 ) -> OnboardingTurnResult | None:
     if len(turn.user_text) > MAX_ATHLETE_MESSAGE_LENGTH:
-        return OnboardingTurnResult("message_too_long", _MESSAGE_TOO_LONG_TEXT, None)
+        return OnboardingTurnResult("message_too_long", MESSAGE_TOO_LONG_TEXT, None)
     history_length = sum(len(message.content) for message in history)
     if history_length + len(turn.user_text) > MAX_SESSION_HISTORY_LENGTH:
         return OnboardingTurnResult("session_too_long", _SESSION_TOO_LONG_TEXT, None)
