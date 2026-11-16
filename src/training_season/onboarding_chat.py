@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
 from typing import TYPE_CHECKING
 
 from training_season.bounded_text import drop_control_characters_but_newline
 from training_season.coach_context_store import read_active_macro
-from training_season.coach_system import render_coach_system
+from training_season.coach_system import coach_system_for_now
 from training_season.onboarding_store import (
     current_open_session,
     discard_open_session,
@@ -16,14 +15,13 @@ from training_season.onboarding_store import (
     session_messages,
 )
 from training_season.onboarding_turn import OnboardingTurnResult, onboarding_turn
-from training_season.timeformat import training_date
 from training_season.validated_reply import Rejected
 from training_season.week_one import push_week_one
 
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable
-    from datetime import datetime
+    from datetime import date, datetime
     from typing import TextIO
     from zoneinfo import ZoneInfo
 
@@ -32,7 +30,7 @@ if TYPE_CHECKING:
     from training_season.llm import LLMAdapter
 
 PROMPT = "Você: "
-_LEAVE_COMMAND = "/sair"
+LEAVE_COMMAND = "/sair"
 _SPEAKER = "Treinador: "
 _FIRST_INTRO = (
     "Olá! Vou montar seu plano de corrida até a sua prova. "
@@ -97,11 +95,12 @@ def say(out: TextIO, text: str) -> None:
 
 
 def _rendered_for_now(coach: Coach) -> tuple[str, date]:
-    now = coach.setup.clock()
-    rendered = render_coach_system(
-        coach.setup.instruction, coach.connection, now=now, zone=coach.setup.zone
+    return coach_system_for_now(
+        coach.setup.instruction,
+        coach.connection,
+        now=coach.setup.clock(),
+        zone=coach.setup.zone,
     )
-    return rendered, date.fromisoformat(training_date(now, coach.setup.zone))
 
 
 def push_first_week(coach: Coach) -> int:
@@ -137,7 +136,12 @@ def _send(coach: Coach, session_id: int, text: str) -> OnboardingTurnResult:
     )
 
 
-def _read_stripped(read_line: Callable[[str], str], out: TextIO) -> str | None:
+def read_stripped_line(read_line: Callable[[str], str], out: TextIO) -> str | None:
+    """
+    Read one athlete line without control characters or outer spaces; None on EOF.
+
+    Used as `line = read_stripped_line(input, sys.stdout)`
+    """
     try:
         return drop_control_characters_but_newline(read_line(PROMPT)).strip()
     except EOFError:
@@ -145,11 +149,16 @@ def _read_stripped(read_line: Callable[[str], str], out: TextIO) -> str | None:
         return None
 
 
-def _next_line(read_line: Callable[[str], str], out: TextIO) -> str | None:
-    line = _read_stripped(read_line, out)
+def next_athlete_line(read_line: Callable[[str], str], out: TextIO) -> str | None:
+    """
+    Read the next non-blank athlete line; None on EOF or `/sair`.
+
+    Used as `while (text := next_athlete_line(input, sys.stdout)) is not None:`
+    """
+    line = read_stripped_line(read_line, out)
     while line == "":
-        line = _read_stripped(read_line, out)
-    return None if line == _LEAVE_COMMAND else line
+        line = read_stripped_line(read_line, out)
+    return None if line == LEAVE_COMMAND else line
 
 
 def converse(coach: Coach, session_id: int, read_line: Callable[[str], str]) -> int:
@@ -163,7 +172,7 @@ def converse(coach: Coach, session_id: int, read_line: Callable[[str], str]) -> 
     if not session_messages(coach.connection, session_id):
         reopening = read_active_macro(coach.connection) is not None
         say(coach.out, _REOPEN_INTRO if reopening else _FIRST_INTRO)
-    while (text := _next_line(read_line, coach.out)) is not None:
+    while (text := next_athlete_line(read_line, coach.out)) is not None:
         result = _send(coach, session_id, text)
         say(coach.out, result.chat_message)
         if result.status == "completed":
