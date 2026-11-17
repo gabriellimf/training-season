@@ -16,12 +16,16 @@ if TYPE_CHECKING:
     import sqlite3
 
 
-def _dated_workout(day: str, step_type: str, metres: int) -> dict[str, object]:
-    step = {
+def _dated_workout(
+    day: str, step_type: str, metres: int, zone: int | None = None
+) -> dict[str, object]:
+    step: dict[str, object] = {
         "type": step_type,
         "duration": {"meters": metres},
         "pace_mps": {"min": 3.0, "max": 3.0},
     }
+    if zone is not None:
+        step["heart_rate_zone"] = zone
     workout = {"name": f"{day[8:]}/{day[5:7]} Leve", "steps": [step]}
     return {"date": day, "workout": workout}
 
@@ -29,7 +33,7 @@ def _dated_workout(day: str, step_type: str, metres: int) -> dict[str, object]:
 def _week_of_metres(easy_m: int, hard_m: int = 0) -> PushWeek:
     workouts = [_dated_workout("2026-11-17", "warmup", easy_m)]
     if hard_m:
-        workouts.append(_dated_workout("2026-11-19", "interval", hard_m))
+        workouts.append(_dated_workout("2026-11-19", "interval", hard_m, zone=4))
     return push_week_from_text(
         json.dumps({"week_start": "2026-11-16", "workouts": workouts})
     )

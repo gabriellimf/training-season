@@ -162,8 +162,9 @@ They do not retry an entire scheduled job. The SDK honors `Retry-After` for up t
 4,294,967 seconds per wait.
 
 With three attempts and no server retry delay, a plan call can take about 45 minutes.
-A chat call can take about 30 minutes. `#15` may revisit the chat timeout and retry
-settings.
+A chat call can take about 30 minutes. The chat page keeps these timeouts and
+retries. The work continues after a dropped request and the page polls, so a shorter
+timeout would only turn a slow success into a failure. See [web.md](web.md).
 
 HTTP 401 and 403 map to `LLMAuthenticationError`.
 

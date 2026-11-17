@@ -63,6 +63,30 @@ Two size limits protect the model context and the cost of each turn:
   characters, the message is refused and the command stops with exit code `2`.
   The answers and the earlier messages stay stored.
 
+## Web check-in
+
+The [chat page](web.md) runs the same check-in with `Fazer check-in`. The questions,
+the answer rules and the hints are the same. The page keeps your answers in its own
+memory and sends all of them on each step with `POST /api/checkin/answers`. The
+server checks them again and answers with the next question, or with a hint and the
+number of answers it accepted. Nothing is stored before the last answer, the same as
+the command. A reload before the last answer starts the questions again.
+
+At the last answer the server stores the `checkin` row, the page shows
+`Check-in salvo.`, and the conversation opens. The web intro has no `/sair` hint.
+`Encerrar check-in` ends the conversation. It shows `Check-in encerrado. Suas
+respostas e mensagens estão salvas.`
+
+The conversation lives in the memory of the server process. A page reload gets it
+back. A restart of the server ends it, and the next message gets `Nenhum check-in
+aberto. Comece um novo check-in.` The answers and your messages stay stored. The
+size limits are the same as above.
+
+A model failure or a conversation that is too long ends the conversation, as the
+command ends with exit code `1` or `2`. The page shows the same texts and returns to
+its actions. After a model failure the message that was sent stays stored. A
+message that makes the conversation too long is not stored.
+
 ## What is stored
 
 One new `checkin` row for each run that reaches the last answer:

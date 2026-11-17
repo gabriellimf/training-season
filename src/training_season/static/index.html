@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1b1e23" media="(prefers-color-scheme: dark)">
+  <title>Treinador</title>
+  <link rel="stylesheet" href="tokens.css">
+  <link rel="stylesheet" href="base.css">
+  <link rel="stylesheet" href="layout.css">
+  <link rel="stylesheet" href="components.css">
+  <link rel="stylesheet" href="plan.css">
+  <script type="module" src="chat.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#composer-input">Ir para a mensagem</a>
+  <header class="app-header">
+    <div class="app-header-row">
+      <h1 class="app-title">Treinador</h1>
+      <div id="garmin-status" class="garmin-status" data-state="unknown">
+        <span class="garmin-dot" aria-hidden="true"></span>
+        <span id="garmin-status-text" class="garmin-status-text"></span>
+        <button id="garmin-status-action" class="button-text" type="button" hidden></button>
+      </div>
+    </div>
+    <div class="tabs" role="tablist" aria-label="Seções">
+      <button id="tab-chat" class="tab" role="tab" type="button" aria-selected="true" aria-controls="panel-chat">Conversa</button>
+      <button id="tab-plan" class="tab" role="tab" type="button" aria-selected="false" aria-controls="panel-plan" tabindex="-1">Plano</button>
+    </div>
+    <p id="connection-banner" class="connection-banner" role="status" hidden>Sem conexão. Tentando de novo…</p>
+  </header>
+  <main class="layout">
+    <section id="panel-chat" class="panel panel-chat" role="tabpanel" aria-labelledby="tab-chat">
+      <h2 class="visually-hidden">Conversa</h2>
+      <ol id="message-list" class="message-list"></ol>
+      <div id="waiting" class="bubble bubble-coach waiting" hidden>
+        <span class="waiting-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+        <span class="waiting-text"></span><span class="waiting-elapsed"></span>
+        <p class="waiting-later" hidden>Ainda trabalhando. Você pode fechar a página e voltar depois.</p>
+      </div>
+      <section class="dock" aria-label="Responder">
+        <section id="mfa-panel" class="mfa-panel" aria-labelledby="mfa-title" hidden>
+          <h2 id="mfa-title" class="mfa-title">Código do Garmin</h2>
+          <p class="mfa-intro">O Garmin pede um código de verificação. Digite o código que o Garmin enviou.</p>
+          <p id="mfa-requested" class="mfa-requested" hidden></p>
+          <form id="mfa-form" class="mfa-form">
+            <label for="mfa-code" class="visually-hidden">Código de verificação</label>
+            <input id="mfa-code" class="mfa-code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="32" enterkeyhint="send" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Código">
+            <button id="mfa-submit" class="button-primary" type="submit" disabled>Enviar</button>
+          </form>
+          <p id="mfa-result" class="mfa-result" role="status"></p>
+          <button id="mfa-new-code" class="button-secondary" type="button">Pedir novo código</button>
+        </section>
+        <p id="dock-hint" class="dock-hint" hidden></p>
+        <div id="quick-replies" class="quick-replies" role="group" aria-label="Respostas rápidas" hidden></div>
+        <div id="dock-links" class="dock-links" hidden>
+          <button id="action-discard" class="button-text" type="button" hidden>Descartar sessão</button>
+          <button id="action-checkin-cancel" class="button-text" type="button" hidden>Cancelar check-in</button>
+          <button id="action-checkin-end" class="button-text" type="button" hidden>Encerrar check-in</button>
+        </div>
+        <form id="composer" class="composer" hidden>
+          <label for="composer-input" class="visually-hidden">Mensagem</label>
+          <textarea id="composer-input" class="composer-input" rows="1" maxlength="16000" enterkeyhint="send"></textarea>
+          <button id="composer-send" class="button-primary" type="submit" disabled>Enviar</button>
+        </form>
+        <div id="action-row" class="action-row" hidden>
+          <button id="action-start" class="button-primary" type="button" hidden>Começar</button>
+          <button id="action-week-one" class="button-primary" type="button" hidden>Enviar semana 1</button>
+          <button id="action-checkin" class="button-primary" type="button" hidden>Fazer check-in</button>
+          <button id="action-reopen" class="button-secondary" type="button" hidden>Revisar objetivo</button>
+        </div>
+      </section>
+    </section>
+    <section id="panel-plan" class="panel panel-plan" role="tabpanel" aria-labelledby="tab-plan" hidden>
+      <h2 class="panel-title">Plano</h2>
+      <p id="plan-empty" class="plan-empty" hidden></p>
+      <div id="plan-weeks" class="plan-weeks"></div>
+    </section>
+  </main>
+  <p id="announcer" class="visually-hidden" role="status" aria-live="polite"></p>
+  <dialog id="discard-dialog" class="dialog" aria-labelledby="discard-title">
+    <form method="dialog">
+      <h2 id="discard-title">Descartar a sessão?</h2>
+      <p>A conversa desta sessão para aqui. As mensagens ficam salvas, e a próxima sessão começa do zero.</p>
+      <div class="dialog-actions">
+        <button value="cancel" class="button-secondary" autofocus>Cancelar</button>
+        <button value="confirm" class="button-danger">Descartar</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

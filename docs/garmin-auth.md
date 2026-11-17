@@ -67,6 +67,64 @@ Use `training-season-garmin check` to test a session. It contacts Garmin.
 Do not enable DEBUG logging for `garminconnect` in production. Version `0.3.20` can
 log part of a failed token-refresh response at DEBUG level.
 
+## Code in the browser
+
+The [chat page](web.md) can take the MFA code, so you do not need a TTY. The page
+reads the Garmin state from the token directory with `GET /api/state`. It makes no
+Garmin call on load. The MFA panel shows when `garmin.state` is `mfa_pending`, in any
+page mode. It has a numeric input for the code, `Enviar`, and `Pedir novo código`.
+The code is never logged and never sent back. The input is cleared after each send.
+
+To finish a login that stopped at MFA:
+
+1. Run `docker compose run --rm app training-season-garmin login`. It exits with
+   code `3` and saves the pending state.
+2. Open the page. The MFA panel shows. The pending state is in the token directory,
+   so a restart of `web` between the two steps does not lose it.
+3. Enter the code and send it. On success the page shows `Login no Garmin concluído.
+   O token foi salvo.` and the panel goes away.
+4. Check with `docker compose run --rm app training-season-garmin status`. It prints
+   `token_cached`.
+
+`Pedir novo código` calls `POST /api/garmin/login`. It replaces the old pending state
+and asks Garmin for a new code. With `garmin.state` `no_token`, the page shows
+`Conectar o Garmin`, which calls the same route.
+
+Both routes hold the coach lock, so a second job gets 409 `busy` while one runs. The
+Portuguese text of each outcome:
+
+| Route | Outcome | `status` | Text |
+| --- | --- | --- | --- |
+| mfa | Code accepted | `connected` | `Login no Garmin concluído. O token foi salvo.` |
+| mfa | Garmin rejected the code | `code_rejected` | `O Garmin recusou o código. Confira o código e envie de novo.` |
+| mfa | No login waits for a code | `not_pending` | `Nenhum login do Garmin espera código agora. Peça um novo código.` |
+| mfa | The pending state cannot continue | `state_invalid` | `O login pendente do Garmin não pode continuar. Peça um novo código.` |
+| mfa | Garmin did not answer, and the token is saved | `connected` | `Login no Garmin concluído. O token foi salvo.` |
+| mfa | Garmin did not answer, and the login still waits for the code | `unavailable` | `O Garmin não respondeu. Envie o código de novo em alguns minutos.` |
+| mfa | Garmin did not answer, and no token is saved | `unavailable` | `O Garmin não respondeu e o login não terminou. Peça um novo código.` |
+| mfa | Another Garmin error | `failed` | `Não consegui concluir o login no Garmin: <cause>` |
+| login | Garmin asks for a code | `mfa_required` | `O Garmin enviou um código de verificação. Digite o código abaixo.` |
+| login | Login done | `connected` | `Login no Garmin concluído. O token foi salvo.` |
+| login | Another Garmin error | `failed` | `Não consegui entrar no Garmin: <cause>` |
+
+`<cause>` is a fixed Portuguese text per error type, never the Garmin error text. A
+held Garmin lock adds `Tente de novo em alguns minutos.` Every Garmin answer also
+carries `garmin: {state, mfa_requested_at}`.
+
+### Login note
+
+When a week push signs in with the e-mail and password, its chat text starts with one
+note line. The page history shows it, and so does the weekly message. The note says
+why the token was not used:
+
+| Reason | Note |
+| --- | --- |
+| The saved token was rejected | `O Garmin recusou o token salvo, e o app entrou de novo com o e-mail e a senha.` |
+| No token was saved | `Não havia token do Garmin salvo, e o app entrou com o e-mail e a senha.` |
+| The saved token could not be read | `O token salvo do Garmin não pôde ser lido, e o app entrou de novo com o e-mail e a senha.` |
+
+A push that used the saved token has no note.
+
 ## Import a locally created token
 
 Use this only when Garmin blocks a credential login from the server. Create the

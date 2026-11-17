@@ -6,13 +6,16 @@ import pytest
 
 from schema_rows import _CREATED_AT, _insert_macro
 from training_season.onboarding_store import (
+    ChatHistoryMessage,
     OnboardingSessionError,
     SessionMessage,
     append_exchange,
     current_open_session,
     discard_open_session,
     open_session,
+    recent_messages,
     session_messages,
+    write_cycle_message,
 )
 
 
@@ -176,3 +179,33 @@ def test_failed_exchange_stores_neither_turn(
         append_exchange(migrated_connection, session_id, "Oi", "")
 
     assert session_messages(migrated_connection, session_id) == ()
+
+
+def _contents(messages: tuple[ChatHistoryMessage, ...]) -> list[tuple[str, str]]:
+    return [(message.kind, message.content) for message in messages]
+
+
+def test_recent_messages_returns_the_newest_rows_oldest_first(
+    migrated_connection: sqlite3.Connection,
+) -> None:
+    session_id = open_session(migrated_connection)
+    append_exchange(migrated_connection, session_id, "Oi", "Olá")
+    write_cycle_message(migrated_connection, "Semana enviada.", None)
+    migrated_connection.execute(
+        "INSERT INTO message (role, content, created_at) VALUES ('system', 'x', ?)",
+        (_CREATED_AT,),
+    )
+
+    messages = recent_messages(migrated_connection, 2)
+
+    assert _contents(messages) == [("onboarding", "Olá"), ("coach", "Semana enviada.")]
+    assert messages[0].role == "assistant"
+    assert messages[0].created_at.endswith("Z")
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_recent_messages_needs_a_positive_limit(
+    migrated_connection: sqlite3.Connection, limit: int
+) -> None:
+    with pytest.raises(ValueError, match=f"limit is {limit}"):
+        recent_messages(migrated_connection, limit)

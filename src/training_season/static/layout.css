@@ -1,0 +1,173 @@
+/* Header */
+
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding: env(safe-area-inset-top) calc(var(--gutter) + env(safe-area-inset-right)) 0
+    calc(var(--gutter) + env(safe-area-inset-left));
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.app-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: 44px;
+}
+
+.app-title {
+  flex: none;
+  font-size: var(--font-size-xl);
+}
+
+.garmin-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  min-width: 0;
+  white-space: nowrap;
+  font-size: var(--font-size-s);
+  color: var(--color-text-muted);
+}
+
+.garmin-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.garmin-status[data-state="unknown"] .garmin-dot {
+  display: none;
+}
+
+.garmin-status[data-state="token_cached"] .garmin-dot {
+  background: var(--color-success);
+}
+
+.garmin-status[data-state="no_token"] .garmin-dot {
+  border: 2px solid var(--color-text-muted);
+}
+
+.garmin-status[data-state="mfa_pending"] .garmin-dot {
+  background: var(--color-warning-text);
+}
+
+.garmin-status-text,
+.garmin-status .button-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.garmin-status .button-text {
+  font-size: var(--font-size-s);
+}
+
+/* The .tab rules below must load after the shared button rules in base.css. */
+.tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-1);
+  padding: 0 0 var(--space-2);
+}
+
+.tab {
+  min-height: var(--tap-min);
+  padding: var(--space-1) var(--space-3);
+  background: var(--color-surface-sunken);
+  color: var(--color-text-muted);
+  border: 1px solid transparent;
+}
+
+.tab[aria-selected="true"] {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+}
+
+.connection-banner {
+  margin: 0 calc(-1 * var(--gutter));
+  padding: var(--space-2) var(--gutter);
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+  font-size: var(--font-size-s);
+  text-align: center;
+}
+
+/* Layout */
+
+.layout {
+  padding: 0 calc(var(--gutter) + env(safe-area-inset-right)) 0
+    calc(var(--gutter) + env(safe-area-inset-left));
+}
+
+.panel[hidden] {
+  display: none;
+}
+
+.panel-chat {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100dvh - var(--phone-header-height) - env(safe-area-inset-top));
+}
+
+.panel-plan {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4) 0 var(--space-6);
+}
+
+.panel-title {
+  font-size: var(--font-size-l);
+}
+
+/* Desktop */
+
+@media (min-width: 960px) {
+  .app-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .app-header-row {
+    flex: 1;
+    min-height: var(--header-height);
+  }
+
+  .connection-banner {
+    flex-basis: calc(100% + 2 * var(--gutter));
+  }
+
+  .tabs {
+    display: none;
+  }
+
+  .layout {
+    display: grid;
+    grid-template-columns: minmax(0, var(--content-max)) var(--plan-column);
+    gap: var(--space-6);
+    justify-content: center;
+    align-items: start;
+  }
+
+  .panel[hidden] {
+    display: flex;
+  }
+
+  .panel-chat {
+    min-height: calc(100dvh - var(--header-height));
+  }
+
+  .panel-plan {
+    position: sticky;
+    top: calc(var(--header-height) + var(--space-4));
+    max-height: calc(100dvh - var(--header-height) - var(--space-6));
+    overflow-y: auto;
+  }
+}

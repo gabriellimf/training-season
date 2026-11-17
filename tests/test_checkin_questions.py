@@ -7,7 +7,15 @@ from io import StringIO
 import pytest
 
 from console_fakes import ScriptedConsole
-from training_season.checkin_questions import ask_checkin_answers, record_checkin
+from training_season.checkin_questions import (
+    CheckinAnswered,
+    CheckinAnswerKind,
+    CheckinAnswerRejected,
+    CheckinNextQuestion,
+    ask_checkin_answers,
+    checkin_step,
+    record_checkin,
+)
 from training_season.checkin_store import CheckinAnswers
 
 _FATIGUE = "Treinador: Como está sua fadiga hoje, de 1 a 10?"
@@ -83,6 +91,39 @@ def test_bad_pain_level_shows_the_hint_and_asks_again() -> None:
 
     assert answers == CheckinAnswers(5, "joelho", 1)
     assert shown == [_FATIGUE, _PAIN, _LOCATION, _LEVEL, _SCALE_HINT, _LEVEL]
+
+
+@pytest.mark.parametrize(
+    ("lines", "question", "accepted", "kind"),
+    [
+        ([], "Como está sua fadiga hoje, de 1 a 10?", 0, "scale"),
+        (["7"], "Algo está doendo? (s/n)", 1, "yes_no"),
+        (["7", "s"], "Onde dói?", 2, "text"),
+        (["7", "s", "joelho"], "De 1 a 10, quanto dói?", 3, "scale"),
+    ],
+)
+def test_checkin_step_names_the_next_question_and_its_answer_kind(
+    lines: list[str], question: str, accepted: int, kind: CheckinAnswerKind
+) -> None:
+    assert checkin_step(lines) == CheckinNextQuestion(question, accepted, kind)
+
+
+def test_checkin_step_rejects_the_first_bad_answer_with_its_hint() -> None:
+    step = checkin_step(["7", "x", "joelho"])
+
+    assert step == CheckinAnswerRejected(
+        "Algo está doendo? (s/n)", "Responda s ou n.", 1, "yes_no"
+    )
+
+
+def test_checkin_step_cleans_raw_answers_like_the_console() -> None:
+    step = checkin_step([" 4 ", " S\x1b ", " joel\x1bho\ndireito ", "6\n"])
+
+    assert step == CheckinAnswered(CheckinAnswers(4, "joelho direito", 6))
+
+
+def test_checkin_step_ends_after_no_pain() -> None:
+    assert checkin_step(["3", "n"]) == CheckinAnswered(CheckinAnswers(3, None, None))
 
 
 @pytest.mark.parametrize(

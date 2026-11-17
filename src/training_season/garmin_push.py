@@ -9,7 +9,7 @@ touches calendar entries it did not create.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
@@ -221,7 +221,8 @@ def push_garmin_week(
         auth_config, lock_timeout=lock_timeout, factory=factory
     ) as session:
         weekly_plan_id = upsert_weekly_plan(connection, macro_plan_id, week)
-        return push_week(connection, session.garmin, weekly_plan_id, week)
+        result = push_week(connection, session.garmin, weekly_plan_id, week)
+        return replace(result, login_reason=session.login_reason)
 
 
 def _entry_line(entry: object) -> tuple[str, str] | None:
