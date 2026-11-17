@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "Self-hosted single-user running coach"
 requires-python = ">=3.12"
 dependencies = [
+    # Pinned. Read the release notes before upgrading.
+    # Starlette 1.x TestClient runs on httpx2; tests need no classic httpx.
+    "fastapi==0.162.0",
     # Pinned. Read the CHANGELOG and MIGRATION.md before upgrading.
     # 2.x moved to httpx2; tests rely on httpx2.MockTransport.
     "anthropic==2.3.0",
@@ -14,6 +17,9 @@ dependencies = [
     # Pinned. Read the CHANGELOG before upgrading.
     # The workout schema relies on 2.x discriminated unions and model_validator.
     "pydantic==2.14.1",
+    # Pinned. Read the CHANGELOG before upgrading.
+    # The web command forces workers=1: the in-memory chat state needs one process.
+    "uvicorn==0.54.0",
 ]
 
 [project.scripts]
@@ -27,6 +33,7 @@ training-season-context = "training_season.coach_context_cli:main"
 training-season-onboarding = "training_season.onboarding_cli:main"
 training-season-weekly = "training_season.weekly_cycle_cli:main"
 training-season-checkin = "training_season.checkin_cli:main"
+training-season-web = "training_season.web_cli:main"
 
 [build-system]
 requires = ["hatchling==1.32.4"]

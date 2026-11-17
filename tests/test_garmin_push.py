@@ -24,10 +24,11 @@ from garmin_push_fakes import (
     week_text,
     workout_rows,
 )
-from training_season.garmin_auth import GarminUnavailableError
-from training_season.garmin_push import scheduled_week_lines
+from training_season.garmin_auth import GarminLoginReason, GarminUnavailableError
+from training_season.garmin_push import push_garmin_week, scheduled_week_lines
 from training_season.push_result import PushFailure, PushStep
 from training_season.push_store import NoActiveMacroPlanError
+from training_season.push_week import push_week_from_text
 
 if TYPE_CHECKING:
     import sqlite3
@@ -383,6 +384,24 @@ def test_no_active_macro_plan_makes_no_garmin_call(
         )
 
     assert fake_server.login_calls == []
+
+
+def test_push_result_carries_the_session_login_reason(
+    connection: sqlite3.Connection,
+    auth_config: GarminAuthConfig,
+    fake_server: FakeGarminServer,
+) -> None:
+    factory, _ = push_factory_for(fake_server, FakeGarminCalendar())
+
+    result = push_garmin_week(
+        connection,
+        auth_config,
+        push_week_from_text(week_text(_THREE_DAYS[:1])),
+        factory=factory,
+    )
+
+    assert result.login_reason is GarminLoginReason.NO_TOKEN
+    assert fake_server.login_calls == ["credential", "token"]
 
 
 def test_logs_carry_no_workout_content_or_response_body(

@@ -69,6 +69,9 @@ for itself and prints the same text on stdout. A run that first closes runs a ha
 kill left open stores one more message per closed run (see [Run record](#run-record)).
 `weekly_plan_id` points to the week when step 6 stored it, else it is empty.
 
+The [chat page](web.md) shows this message in its history, with the onboarding
+messages. The `Plano` tab shows the stored week with the same volume and split lines.
+
 After a full run the message lists one line per workout day, the planned volume,
 the easy and hard split, then the Garmin push result:
 
@@ -81,6 +84,15 @@ Leve: 8,0 km · Forte: 5,2 km.
 Semana de 16/11 enviada ao Garmin. Agendados: 17/11, 19/11.
 ```
 
+When the push at step 6 signed in again with the e-mail and password, because the
+saved token was missing, rejected or unreadable, the Garmin push text starts with one
+note line that says why. See [garmin-auth.md](garmin-auth.md#login-note).
+
+```text
+O Garmin recusou o token salvo, e o app entrou de novo com o e-mail e a senha.
+Semana de 16/11 enviada ao Garmin. Agendados: 17/11, 19/11.
+```
+
 - Planned distance of a step: `duration.meters`, or `duration.seconds` times the
   middle of its `pace_mps` range. A `repeat` counts `count` times its steps. The week
   is the sum of its workouts.
@@ -89,8 +101,9 @@ Semana de 16/11 enviada ao Garmin. Agendados: 17/11, 19/11.
 - Last week: the `distance_m` sum of the `running` activities of the Monday to
   Sunday before the planned week. Swims do not count. With no run it is `0,0`. The
   delta sign is `+` or `-`, and `±0,0` when the two are equal.
-- A workout is hard (`Forte`) when it has an `interval` step, also inside a
-  `repeat`. Else it is easy (`Leve`).
+- A workout is hard (`Forte`) when any of its steps, of any type, has
+  `heart_rate_zone` 3 or higher. A step with no zone counts as hard only inside a
+  `repeat`. Else the workout is easy (`Leve`).
 
 After a failed step the message names the step and the cause:
 

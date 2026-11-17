@@ -124,6 +124,30 @@ def stored_workouts(
     )
 
 
+def scheduled_workout_keys(
+    connection: sqlite3.Connection, weekly_plan_id: int, first_day: date, last_day: date
+) -> frozenset[tuple[date, str]]:
+    """
+    Return (date, name) of each workout of this weekly plan that Garmin holds.
+
+    Only rows of the last push count: a row created before the last
+    `upsert_weekly_plan` is left from an earlier push whose removal failed.
+    Used as `scheduled_workout_keys(connection, 7, week.week_start, week.week_end)`
+    """
+    rows = connection.execute(
+        """
+        SELECT workout.schedule_date, workout.name FROM workout
+        JOIN weekly_plan ON weekly_plan.id = workout.weekly_plan_id
+        WHERE workout.weekly_plan_id = ?
+        AND workout.schedule_date BETWEEN ? AND ?
+        AND workout.garmin_schedule_id IS NOT NULL
+        AND workout.created_at >= weekly_plan.updated_at
+        """,
+        (weekly_plan_id, first_day.isoformat(), last_day.isoformat()),
+    ).fetchall()
+    return frozenset((date.fromisoformat(row[0]), str(row[1])) for row in rows)
+
+
 def delete_stored_workout(connection: sqlite3.Connection, row_id: int) -> None:
     """
     Delete one workout row after Garmin no longer holds it.

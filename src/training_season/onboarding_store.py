@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     import sqlite3
 
 SessionRole = Literal["user", "assistant"]
+MessageKind = Literal["onboarding", "coach"]
 
 _INSERT_MESSAGE = """
 INSERT INTO message (role, content, onboarding_session_id, created_at)
@@ -26,6 +27,17 @@ _COMPLETE_SESSION = """
 UPDATE onboarding_session
 SET status = 'completed', completed_at = ?, macro_plan_id = ?
 WHERE id = ? AND status = 'open'
+"""
+_RECENT_MESSAGES = """
+SELECT role, content, created_at,
+       CASE WHEN onboarding_session_id IS NULL THEN 'coach' ELSE 'onboarding' END
+FROM (
+    SELECT id, role, content, created_at, onboarding_session_id FROM message
+    WHERE role IN ('user', 'assistant')
+    ORDER BY id DESC
+    LIMIT ?
+)
+ORDER BY id
 """
 _DISCARD_OPEN_SESSION = """
 UPDATE onboarding_session SET status = 'discarded', discarded_at = ?
@@ -161,6 +173,30 @@ def session_messages(
         (session_id,),
     ).fetchall()
     return tuple(SessionMessage(row[0], row[1]) for row in rows)
+
+
+@dataclass(frozen=True, slots=True)
+class ChatHistoryMessage:
+    """One stored chat turn; `kind` says if an onboarding session owns it."""
+
+    role: SessionRole
+    content: str = field(repr=False)
+    created_at: str
+    kind: MessageKind
+
+
+def recent_messages(
+    connection: sqlite3.Connection, limit: int
+) -> tuple[ChatHistoryMessage, ...]:
+    """
+    Return the newest `limit` user and coach turns, oldest first.
+
+    Used as `history = recent_messages(connection, 50)`
+    """
+    if limit < 1:
+        raise ValueError(f"limit is {limit}, expected a positive integer")
+    rows = connection.execute(_RECENT_MESSAGES, (limit,)).fetchall()
+    return tuple(ChatHistoryMessage(*row) for row in rows)
 
 
 def discard_open_session(connection: sqlite3.Connection) -> int | None:

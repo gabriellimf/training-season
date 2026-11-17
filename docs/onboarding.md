@@ -100,7 +100,42 @@ stops with exit code `2`.
 revisions with their reasons. `history <id>` prints the stored JSON of one macro
 plan. Archived plans stay readable.
 
+## Web onboarding
+
+The [chat page](web.md) runs the same onboarding as the commands. It uses the same
+session, the same limits and the same coach turns. The page and the commands share
+one database, so you can start in one and continue in the other.
+
+- With no active macro plan, the page shows the intro and `Começar`. The intro has
+  no `/sair` hint. To pause, leave the page. The messages stay in SQLite and the
+  page shows them again.
+- `Revisar objetivo` is `reopen`. The current macro plan stays active until the new
+  one is ready. A request for a first onboarding with an active plan gets 409 `Já
+  existe um plano ativo. Use Revisar objetivo para mudar o objetivo.` A request to
+  reopen with no active plan gets 409 `Nenhum plano ativo. Comece o onboarding.`
+- `Descartar sessão` is `discard`. It shows `Sessão de onboarding descartada. As
+  mensagens ficam salvas.` With no open session it gets 409 `Nenhuma sessão de
+  onboarding aberta.`
+- A model failure stores nothing for that turn. The page shows `Não consegui falar
+  com o treinador agora. Sua mensagem não foi salva. Envie de novo.` and keeps your
+  text for a new send.
+- A session over the size limit shows `Esta sessão de onboarding ficou longa demais
+  para continuar. Descarte a sessão para começar de novo.`
+- When the coach completes the onboarding, the page asks for week 1 once, with
+  `POST /api/week-one`. It never asks by itself when it loads. In mode
+  `week_one_pending` it shows `Enviar semana 1`.
+
+Only the web stores the week-1 outcome. `POST /api/week-one` writes the outcome text
+(pushed, partial, empty, rejected, mfa_required or failed) as one coach `message` row, so the chat
+history keeps it also when the request drops. The `week` command stores nothing and
+only prints. A rejected week shows the count of validation errors, never a model
+value.
+
 ## Garmin MFA
+
+When the web page stops for MFA, the MFA panel shows and you enter the code there.
+See [garmin-auth.md](garmin-auth.md#code-in-the-browser). The rest of this section
+is for the commands.
 
 When Garmin asks for MFA during the week-1 push, the command stops with exit code
 `3`. The profile and the macro plan are already stored. Finish the login with

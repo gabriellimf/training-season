@@ -62,6 +62,13 @@ WHERE macro_plan_id = ? AND week_start BETWEEN ? AND ?
 ORDER BY week_start
 """
 
+_WEEKLY_PLAN_EXISTS = """
+SELECT EXISTS (
+    SELECT 1 FROM weekly_plan
+    WHERE macro_plan_id = ? AND week_start BETWEEN ? AND ?
+)
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class ActiveMacroRow:
@@ -71,6 +78,15 @@ class ActiveMacroRow:
     start_date: str
     race_date: str
     plan_json: str
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveMacroDates:
+    """The active macro plan's id and dates, without the plan JSON."""
+
+    macro_plan_id: int
+    start_date: str
+    race_date: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +161,32 @@ def read_active_macro(connection: sqlite3.Connection) -> ActiveMacroRow | None:
         "WHERE status = 'active'"
     ).fetchone()
     return None if row is None else ActiveMacroRow(*row)
+
+
+def read_active_macro_dates(connection: sqlite3.Connection) -> ActiveMacroDates | None:
+    """
+    Return the active macro plan's id and dates, or None before onboarding made one.
+
+    Used as `macro = read_active_macro_dates(connection)`
+    """
+    row = connection.execute(
+        "SELECT id, start_date, race_date FROM macro_plan WHERE status = 'active'"
+    ).fetchone()
+    return None if row is None else ActiveMacroDates(*row)
+
+
+def has_weekly_plan(
+    connection: sqlite3.Connection, macro_plan_id: int, first: date, last: date
+) -> bool:
+    """
+    Say whether the macro plan has a weekly plan that starts first..last.
+
+    Used as `has_weekly_plan(connection, 3, date(2026, 10, 5), date(2027, 4, 18))`
+    """
+    row = connection.execute(
+        _WEEKLY_PLAN_EXISTS, (macro_plan_id, first.isoformat(), last.isoformat())
+    ).fetchone()
+    return bool(row[0])
 
 
 def read_profile_json(connection: sqlite3.Connection) -> str | None:

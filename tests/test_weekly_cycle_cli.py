@@ -44,6 +44,7 @@ def _interval_in_seconds_reply(workout_index: int) -> str:
             "type": "interval",
             "duration": {"seconds": 600},
             "pace_mps": {"min": 4.0, "max": 4.0},
+            "heart_rate_zone": 4,
         }
     ]
     return json.dumps(reply)

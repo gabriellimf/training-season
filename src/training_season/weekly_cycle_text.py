@@ -32,6 +32,7 @@ from training_season.workout_validation import MAX_ERROR_LINES
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from datetime import date
 
     from training_season.push_week import PushWeek
 
@@ -120,6 +121,24 @@ def failure_text(step: CycleStep, cause: str) -> str:
     return f"{head}: {cause}\n{_NOT_RUN}"
 
 
+def weekday_text(day: date) -> str:
+    """
+    Return the short Portuguese weekday name of a date.
+
+    Used as `weekday_text(date(2026, 11, 17))` gives "ter"
+    """
+    return _WEEKDAY_TEXT[day.weekday()]
+
+
+def metres_km_text(metres: float) -> str:
+    """
+    Return metres as km with one decimal and a comma, the volume lines' rounding.
+
+    Used as `metres_km_text(1500)` gives "1,5"
+    """
+    return _km_text(_hectometres(metres))
+
+
 def planned_week_lines(week: PushWeek) -> tuple[str, ...]:
     """
     Return a heading and one line per workout day: weekday and workout name.
@@ -128,7 +147,7 @@ def planned_week_lines(week: PushWeek) -> tuple[str, ...]:
     """
     heading = f"Treinos da semana de {week.week_start:%d/%m} a {week.week_end:%d/%m}:"
     days = tuple(
-        f"- {_WEEKDAY_TEXT[entry.date.weekday()]} {entry.workout.name}"
+        f"- {weekday_text(entry.date)} {entry.workout.name}"
         for entry in week.ordered_entries()
     )
     return (heading, *(days or ("- nenhum treino",)))

@@ -6,6 +6,7 @@ from datetime import date
 
 import pytest
 
+from garmin_push_fakes import week_text
 from onboarding_rows import (
     CLOSING_EXCHANGE,
     RACE_DAY,
@@ -13,8 +14,14 @@ from onboarding_rows import (
     valid_macro_plan,
     valid_result,
 )
-from schema_rows import _CREATED_AT
-from training_season.coach_context_store import read_active_macro, read_profile_json
+from schema_rows import _CREATED_AT, _insert_macro
+from training_season.coach_context_store import (
+    ActiveMacroDates,
+    has_weekly_plan,
+    read_active_macro,
+    read_active_macro_dates,
+    read_profile_json,
+)
 from training_season.macro_store import (
     MacroHistoryEntry,
     RevisionReasonError,
@@ -30,7 +37,8 @@ from training_season.onboarding_store import (
     open_session,
     session_messages,
 )
-from training_season.push_store import NoActiveMacroPlanError
+from training_season.push_store import NoActiveMacroPlanError, upsert_weekly_plan
+from training_season.push_week import push_week_from_text
 
 NEW_RACE_DAY = date(2027, 5, 30)
 NEW_REASON = "Mudei a prova para maio."
@@ -332,3 +340,30 @@ def test_plan_json_of_an_unknown_macro_is_none(
     migrated_connection: sqlite3.Connection,
 ) -> None:
     assert read_macro_plan_json(migrated_connection, 42) is None
+
+
+def test_active_macro_dates_skip_the_plan_json(
+    migrated_connection: sqlite3.Connection,
+) -> None:
+    assert read_active_macro_dates(migrated_connection) is None
+    _insert_macro(migrated_connection, status="archived", archived_at=_CREATED_AT)
+    macro_id = _insert_macro(
+        migrated_connection, start_date="2026-11-16", race_date="2027-04-18"
+    )
+
+    assert read_active_macro_dates(migrated_connection) == ActiveMacroDates(
+        macro_id, "2026-11-16", "2027-04-18"
+    )
+
+
+def test_has_weekly_plan_looks_only_inside_the_dates_of_one_macro(
+    migrated_connection: sqlite3.Connection,
+) -> None:
+    macro_id = _insert_macro(migrated_connection)
+    week = push_week_from_text(week_text([], week_start="2026-11-16"))
+    upsert_weekly_plan(migrated_connection, macro_id, week)
+    first, last = date(2026, 11, 9), date(2026, 11, 22)
+
+    assert has_weekly_plan(migrated_connection, macro_id, first, last)
+    assert not has_weekly_plan(migrated_connection, macro_id + 1, first, last)
+    assert not has_weekly_plan(migrated_connection, macro_id, date(2026, 11, 17), last)

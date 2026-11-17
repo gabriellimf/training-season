@@ -28,18 +28,20 @@ if TYPE_CHECKING:
     from training_season.coach_instruction import CoachInstruction
     from training_season.garmin_auth import GarminAuthConfig, GarminFactory
     from training_season.llm import LLMAdapter
+    from training_season.push_result import PushResult
 
 PROMPT = "Você: "
 LEAVE_COMMAND = "/sair"
 _SPEAKER = "Treinador: "
-_FIRST_INTRO = (
+FIRST_INTRO = (
     "Olá! Vou montar seu plano de corrida até a sua prova. "
-    "Conte um pouco sobre você para começarmos. Digite /sair para pausar."
+    "Conte um pouco sobre você para começarmos."
 )
-_REOPEN_INTRO = (
+REOPEN_INTRO = (
     "Vamos revisar o seu objetivo. Conte o que mudou e por quê. "
-    "O plano atual fica valendo até o novo ficar pronto. Digite /sair para pausar."
+    "O plano atual fica valendo até o novo ficar pronto."
 )
+_PAUSE_HINT = "Digite /sair para pausar."
 ACTIVE_PLAN_TEXT = "Já existe um plano ativo. Use `reopen` para mudar o objetivo."
 NO_ACTIVE_PLAN_TEXT = "Nenhum plano ativo. Use `chat` para o primeiro onboarding."
 NO_OPEN_SESSION_TEXT = "Nenhuma sessão de onboarding aberta."
@@ -89,17 +91,49 @@ def session_for(connection: sqlite3.Connection, *, reopening: bool) -> int:
     return open_session(connection)
 
 
+def onboarding_intro(*, reopening: bool) -> str:
+    """
+    The opening text of a session; a review of the goal has its own.
+
+    Used as `onboarding_intro(reopening=read_active_macro(connection) is not None)`
+    """
+    return REOPEN_INTRO if reopening else FIRST_INTRO
+
+
 def say(out: TextIO, text: str) -> None:
     """Write one coach line on the console: `say(out, "Olá")`."""
     out.write(f"{_SPEAKER}{text}\n")
 
 
-def _rendered_for_now(coach: Coach) -> tuple[str, date]:
+def rendered_for_now(
+    setup: CoachSetup, connection: sqlite3.Connection
+) -> tuple[str, date]:
+    """
+    Render the coach system text for the current clock, with the training date.
+
+    Used as `instruction_text, today = rendered_for_now(setup, connection)`
+    """
     return coach_system_for_now(
-        coach.setup.instruction,
-        coach.connection,
-        now=coach.setup.clock(),
-        zone=coach.setup.zone,
+        setup.instruction, connection, now=setup.clock(), zone=setup.zone
+    )
+
+
+def first_week_outcome(
+    connection: sqlite3.Connection, adapter: LLMAdapter, setup: CoachSetup
+) -> PushResult | Rejected:
+    """
+    Generate and push today..Sunday under the active macro; nothing is printed.
+
+    Used as `outcome = first_week_outcome(connection, adapter, setup)`
+    """
+    instruction_text, today = rendered_for_now(setup, connection)
+    return push_week_one(
+        connection,
+        adapter,
+        setup.auth_config,
+        instruction_text=instruction_text,
+        today=today,
+        factory=setup.garmin_factory,
     )
 
 
@@ -109,31 +143,43 @@ def push_first_week(coach: Coach) -> int:
 
     Used as `return push_first_week(coach)`
     """
-    instruction_text, today = _rendered_for_now(coach)
-    outcome = push_week_one(
-        coach.connection,
-        coach.adapter,
-        coach.setup.auth_config,
-        instruction_text=instruction_text,
-        today=today,
-        factory=coach.setup.garmin_factory,
-    )
+    outcome = first_week_outcome(coach.connection, coach.adapter, coach.setup)
     coach.out.write(f"{outcome.chat_message}\n")
     if isinstance(outcome, Rejected):
         return _REJECTED_WEEK
     return 0 if outcome.failed is None else 1
 
 
-def _send(coach: Coach, session_id: int, text: str) -> OnboardingTurnResult:
-    instruction_text, today = _rendered_for_now(coach)
+def send_onboarding_message(
+    connection: sqlite3.Connection,
+    adapter: LLMAdapter,
+    setup: CoachSetup,
+    session_id: int,
+    text: str,
+) -> OnboardingTurnResult:
+    """
+    Run one onboarding turn on the open session with the current coach system.
+
+    Used as `result = send_onboarding_message(connection, adapter, setup, 3, "Oi")`
+    """
+    instruction_text, today = rendered_for_now(setup, connection)
     return onboarding_turn(
-        coach.connection,
-        coach.adapter,
+        connection,
+        adapter,
         session_id=session_id,
         instruction_text=instruction_text,
         user_text=text,
         today=today,
     )
+
+
+def cleaned_athlete_text(text: str) -> str:
+    """
+    Drop control characters except newlines, then outer spaces.
+
+    Used as `text = cleaned_athlete_text(" Oi ")`
+    """
+    return drop_control_characters_but_newline(text).strip()
 
 
 def read_stripped_line(read_line: Callable[[str], str], out: TextIO) -> str | None:
@@ -143,7 +189,7 @@ def read_stripped_line(read_line: Callable[[str], str], out: TextIO) -> str | No
     Used as `line = read_stripped_line(input, sys.stdout)`
     """
     try:
-        return drop_control_characters_but_newline(read_line(PROMPT)).strip()
+        return cleaned_athlete_text(read_line(PROMPT))
     except EOFError:
         out.write("\n")
         return None
@@ -171,9 +217,11 @@ def converse(coach: Coach, session_id: int, read_line: Callable[[str], str]) -> 
     """
     if not session_messages(coach.connection, session_id):
         reopening = read_active_macro(coach.connection) is not None
-        say(coach.out, _REOPEN_INTRO if reopening else _FIRST_INTRO)
+        say(coach.out, f"{onboarding_intro(reopening=reopening)} {_PAUSE_HINT}")
     while (text := next_athlete_line(read_line, coach.out)) is not None:
-        result = _send(coach, session_id, text)
+        result = send_onboarding_message(
+            coach.connection, coach.adapter, coach.setup, session_id, text
+        )
         say(coach.out, result.chat_message)
         if result.status == "completed":
             return push_first_week(coach)

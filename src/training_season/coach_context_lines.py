@@ -47,7 +47,13 @@ def _kilometres(distance_m: float) -> str:
     return f"{distance_m / 1000:.2f} km"
 
 
-def _clock(seconds: float) -> str:
+def clock_text(seconds: float) -> str:
+    """
+    Round to whole seconds and show `m:ss`, or `h:mm:ss` from one hour.
+
+    The coach context and the plan card both write paces with it.
+    Used as `clock_text(1000 / 3.125)` -> `5:20`
+    """
     minutes, rest_seconds = divmod(round(seconds), 60)
     hours, rest_minutes = divmod(minutes, 60)
     if hours == 0:
@@ -58,7 +64,7 @@ def _clock(seconds: float) -> str:
 def _pace(speed_mps: float) -> str | None:
     if speed_mps <= 0:
         return None
-    return f"{_clock(1000 / speed_mps)} min/km"
+    return f"{clock_text(1000 / speed_mps)} min/km"
 
 
 def _sleep_hours(sleep_seconds: float) -> str:
@@ -76,7 +82,7 @@ def activity_line(activity: ContextActivityRow) -> str:
     measures = _joined(
         (
             _optional(activity.distance_m, _kilometres),
-            _optional(activity.duration_s, _clock),
+            _optional(activity.duration_s, clock_text),
             _optional(activity.avg_speed_mps, _pace),
             _optional(activity.avg_hr, "FC média {:.0f}".format),
             _optional(activity.max_hr, "FC máx {:.0f}".format),
@@ -100,7 +106,7 @@ def _lap_text(lap: dict[str, object]) -> str:
     return _joined(
         (
             _optional(non_negative(lap.get(LAP_DISTANCE_KEY)), _kilometres),
-            _optional(non_negative(lap.get(LAP_DURATION_KEY)), _clock),
+            _optional(non_negative(lap.get(LAP_DURATION_KEY)), clock_text),
             _optional(non_negative(lap.get(LAP_SPEED_KEY)), _pace),
             _optional(non_negative(lap.get(LAP_HR_KEY)), "FC {:.0f}".format),
         )
@@ -164,7 +170,7 @@ def week_totals_text(sport_totals: Sequence[WeekSportTotals]) -> str:
     run_count, run_m, run_s = _sport_sums(by_sport.get("running"))
     swim_count, swim_m, _swim_s = _sport_sums(by_sport.get("swimming"))
     return (
-        f"corrida {run_count}x, {_kilometres(run_m)}, {_clock(run_s)}; "
+        f"corrida {run_count}x, {_kilometres(run_m)}, {clock_text(run_s)}; "
         f"natação {swim_count}x, {_kilometres(swim_m)}"
     )
 

@@ -38,5 +38,20 @@ services:
     volumes:
       - data:/data
 
+  web:
+    build: .
+    command: training-season-web
+    restart: unless-stopped
+    environment:
+      <<: *app-environment
+      # Docker port publishing needs 0.0.0.0 inside the container.
+      WEB_HOST: 0.0.0.0
+      WEB_ALLOWED_HOSTS: ${WEB_ALLOWED_HOSTS:-127.0.0.1,localhost}
+    ports:
+      # Loopback only: the page has no login yet.
+      - "127.0.0.1:${WEB_PUBLISH_PORT:-8000}:8000"
+    volumes:
+      - data:/data
+
 volumes:
   data:
